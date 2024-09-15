@@ -8,7 +8,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/sjp/query-shared-worker-persister.git"
+    "url": "git+https://github.com/sjp/query-shared-worker-persister.git"
   },
   "license": "MIT",
   "homepage": "https://github.com/sjp/query-shared-worker-persister",
