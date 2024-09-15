@@ -20,7 +20,7 @@ const isSharedWorkerAvailable = () => !!window && !!window.SharedWorker;
 
 const STORAGE_KEY = "TANSTACK_QUERY_SHARED_WORKER_CACHE";
 
-interface CreateSharedWorkerStoragePersisterOptions {
+interface CreateSharedWorkerPersisterOptions {
   /** The storage client used for setting and retrieving items from cache.
    * For SSR pass in `null`.
    * If not provided, a default SharedWorker-based storage provider will be created.
@@ -36,12 +36,12 @@ interface CreateSharedWorkerStoragePersisterOptions {
 }
 
 /**
- * Creates a persister that shared
+ * Creates a persister that saves to a SharedWorker.
  * @param options An optional set of parameters that enables configuration of the persister.
  * @returns A persister intended to be used with the QueryClient's persistence layer.
  */
-export const createSharedWorkerStoragePersister = (
-  options: CreateSharedWorkerStoragePersisterOptions = {}
+export const createSharedWorkerPersister = (
+  options: CreateSharedWorkerPersisterOptions = {}
 ): Persister => {
   const { storage, key } = options;
 

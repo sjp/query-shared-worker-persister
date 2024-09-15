@@ -1,8 +1,4 @@
-import { createSharedWorkerStoragePersister } from "./create-shared-worker-cache";
+import { createSharedWorkerPersister } from "./shared-worker-persister";
 import { createSharedStorage, createSharedWorker } from "./storage";
 
-export {
-  createSharedWorkerStoragePersister,
-  createSharedStorage,
-  createSharedWorker,
-};
+export { createSharedWorkerPersister, createSharedStorage, createSharedWorker };
