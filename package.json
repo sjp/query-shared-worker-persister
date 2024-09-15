@@ -2,6 +2,16 @@
   "name": "@sjpnz/query-shared-worker-persister",
   "description": "A persister for storing query data in a SharedWorker, to be used with TanStack/Query",
   "version": "0.0.1-alpha1",
+  "author": {
+    "name": "Simon Potter",
+    "url": "https://sjp.co.nz"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sjp/query-shared-worker-persister.git"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/sjp/query-shared-worker-persister",
   "type": "module",
   "scripts": {
     "build": "tsc && vite build"
@@ -9,7 +19,7 @@
   "dependencies": {
     "comlink": "^4.4.1"
   },
-  "devDependencies": {    
+  "devDependencies": {
     "@biomejs/biome": "^1.9.0",
     "@tanstack/query-persist-client-core": "^5.56.2",
     "typescript": "^5.5.3",
