@@ -34,8 +34,6 @@ Follow these steps to configure `QueryClient` persistence. While the examples us
 
     For optimal performance and to ensure true global sharing of cached values across tabs, it's highly recommended to use a [`broadcastQueryClient`](https://tanstack.com/query/latest/docs/framework/react/plugins/broadcastQueryClient). This prevents different tabs from overwriting each other's cached values.
 
-    It is optional but highly recommended that you use a [broadcastQueryClient](https://tanstack.com/query/latest/docs/framework/react/plugins/broadcastQueryClient), otherwise the cached values will be overwritten by different tabs instead of being globally shared, reducing the effectiveness of the SharedWorker persistence.
-
     ```typescript
     import { broadcastQueryClient } from '@tanstack/react-query-broadcast-client-experimental';
     
