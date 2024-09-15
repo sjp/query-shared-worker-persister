@@ -1,17 +1,18 @@
 {
-  "name": "@sjp/query-shared-worker-persister",
+  "name": "@sjpnz/query-shared-worker-persister",
   "description": "A persister for storing query data in a SharedWorker, to be used with TanStack/Query",
-  "private": true,
-  "version": "0.0.0",
+  "version": "0.0.1-alpha1",
   "type": "module",
   "scripts": {
     "build": "tsc && vite build"
   },
-  "devDependencies": {
+  "dependencies": {
+    "comlink": "^4.4.1"
+  },
+  "devDependencies": {    
+    "@biomejs/biome": "^1.9.0",
+    "@tanstack/react-query-persist-client": "^5.56.2",
     "typescript": "^5.5.3",
     "vite": "^5.4.1"
-  },
-  "dependencies": {
-    "@biomejs/biome": "^1.9.0"
   }
 }
