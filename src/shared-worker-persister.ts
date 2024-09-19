@@ -16,7 +16,8 @@ const noopPersister: Persister = {
   removeClient: noop,
 };
 
-const isSharedWorkerAvailable = () => !!window && !!window.SharedWorker;
+const isServer = () => typeof window === 'undefined';
+const isSharedWorkerAvailable = () => !isServer() && !!window.SharedWorker;
 
 const STORAGE_KEY = "TANSTACK_QUERY_SHARED_WORKER_CACHE";
 
