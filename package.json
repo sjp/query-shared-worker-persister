@@ -1,7 +1,7 @@
 {
   "name": "@sjpnz/query-shared-worker-persister",
   "description": "A persister for storing query data in a SharedWorker, to be used with TanStack/Query",
-  "version": "0.0.1-alpha3",
+  "version": "0.0.1-alpha4",
   "author": {
     "name": "Simon Potter",
     "url": "https://sjp.co.nz"
