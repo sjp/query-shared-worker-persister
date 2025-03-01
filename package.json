@@ -22,13 +22,13 @@
     "build": "tsc && vite build"
   },
   "dependencies": {
-    "comlink": "^4.4.1"
+    "comlink": "^4.4.2"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@tanstack/query-persist-client-core": "^5.56.2",
     "typescript": "^5.8.2",
-    "vite": "^6.0.0",
-    "vite-plugin-dts": "^4.2.1"
+    "vite": "^6.2.0",
+    "vite-plugin-dts": "^4.5.1"
   }
 }
