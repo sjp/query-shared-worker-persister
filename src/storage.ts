@@ -4,6 +4,8 @@ import type {
   PersistedClient,
 } from "@tanstack/query-persist-client-core";
 
+export const CacheWorkerUrl = new URL("./cache.worker.ts", import.meta.url);
+
 /**
  * A convenenience method used for exposing a SharedWorker as an asynchronous storage provider.
  * @param worker A SharedWorker that exposes functionality for persisting a QueryClient.
@@ -21,7 +23,8 @@ export const createSharedStorage = (
  * Creates a SharedWorker that stores our cache
  */
 export const createSharedWorker = (): SharedWorker => {
-  return new SharedWorker(new URL("./cache.worker.ts", import.meta.url), {
+  return new SharedWorker(CacheWorkerUrl, {
     type: "module",
+    name: "TANSTACK_QUERY_SHARED_CACHE_WORKER"
   });
 };
