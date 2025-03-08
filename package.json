@@ -19,7 +19,8 @@
   ],
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc && vite build"
+    "build": "tsc && vite build",
+    "lint": "npx @biomejs/biome lint --error-on-warnings"
   },
   "dependencies": {
     "comlink": "^4.4.2"
