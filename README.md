@@ -15,6 +15,12 @@ This package allows [Tanstack Query](https://tanstack.com/query/latest) state to
 
 A common use case is for access tokens. There is rarely a need for fetching a separate token for each new window. A shared query cache via `SharedWorker` will greatly improve application startup as a result.
 
+### Demo
+
+A simple demo app has been published that demonstrates desired caching behaviour here: <https://sjp.co.nz/projects/query-shared-worker-persister/demo>
+
+The source for the react application is available on [GitHub](https://github.com/sjp/query-shared-worker-demo)
+
 ## Getting Started
 
 ### Installation
