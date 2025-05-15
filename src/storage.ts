@@ -14,7 +14,11 @@ export const createSharedStorage = (
   worker?: SharedWorker
 ): AsyncStorage<PersistedClient> => {
   const sharedWorker = worker ?? createSharedWorker();
-  return wrap(sharedWorker.port);
+
+   // gross type hack required
+   // TS cannot resolve the entries parameter that should be correctly
+   // handled but is not supported once wrapped via comlink/remote
+  return wrap(sharedWorker.port) as unknown as AsyncStorage<PersistedClient>;
 };
 
 /**
