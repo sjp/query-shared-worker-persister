@@ -28,6 +28,9 @@ const storage: AsyncStorage<PersistedClient> = {
   removeItem: (key: string): void => {
     cache.delete(key);
   },
+  entries: (): [string, PersistedClient][] => {
+    return Array.from(cache.entries());
+  },
 };
 
 sharedWorkerGlobalScope.onconnect = (event) => {
