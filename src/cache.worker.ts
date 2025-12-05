@@ -36,4 +36,5 @@ const storage: AsyncStorage<PersistedClient> = {
 sharedWorkerGlobalScope.onconnect = (event) => {
   const port = event.ports[0];
   expose(storage, port);
+  port.postMessage({ ready: true });
 };

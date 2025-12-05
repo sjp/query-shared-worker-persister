@@ -14,11 +14,49 @@ export const createSharedStorage = (
   worker?: SharedWorker
 ): AsyncStorage<PersistedClient> => {
   const sharedWorker = worker ?? createSharedWorker();
+  const port = sharedWorker.port;
 
-   // gross type hack required
-   // TS cannot resolve the entries parameter that should be correctly
-   // handled but is not supported once wrapped via comlink/remote
-  return wrap(sharedWorker.port) as unknown as AsyncStorage<PersistedClient>;
+  // Set up the ready promise and event listener BEFORE starting the port
+  let readyResolve: (() => void) | null = null;
+  const readyPromise = new Promise<void>((resolve) => {
+    readyResolve = resolve;
+  });
+
+  const handleMessage = (event: MessageEvent) => {
+    if (event?.data?.ready) {
+      port.removeEventListener("message", handleMessage);
+      readyResolve?.();
+    }
+  };
+  
+  port.addEventListener("message", handleMessage);
+  // Start the port after the listener is set up
+  port.start();
+
+  // gross type hack required
+  // TS cannot resolve the entries parameter that should be correctly
+  // handled but is not supported once wrapped via comlink/remote
+  const wrappedStorage = wrap(port) as unknown as AsyncStorage<PersistedClient>;
+
+  // Wrap each method to wait for ready before executing
+  return {
+    getItem: async (key: string) => {
+      await readyPromise;
+      return wrappedStorage.getItem(key);
+    },
+    setItem: async (key: string, value: PersistedClient) => {
+      await readyPromise;
+      return wrappedStorage.setItem(key, value);
+    },
+    removeItem: async (key: string) => {
+      await readyPromise;
+      return wrappedStorage.removeItem(key);
+    },
+    entries: async () => {
+      await readyPromise;
+      return wrappedStorage.entries?.() ?? [];
+    },
+  };
 };
 
 /**
