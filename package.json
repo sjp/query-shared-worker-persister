@@ -16,15 +16,15 @@
     "dist"
   ],
   "type": "module",
-  "types": "dist/src/index.d.ts",
+  "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/query-shared-worker-persister.js",
-      "types": "./dist/src/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     }
   },
   "scripts": {
-    "build": "tsc && vp build",
+    "build": "tsc && vp pack",
     "lint": "vp lint",
     "lint:fix": "vp check --fix",
     "test": "vp test run",
@@ -34,10 +34,8 @@
     "@tanstack/query-async-storage-persister": "^5.100.14"
   },
   "devDependencies": {
-    "@microsoft/api-extractor": "^7.58.7",
     "@tanstack/query-persist-client-core": "^5.56.2",
     "typescript": "^6.0.2",
-    "unplugin-dts": "^1.0.2",
     "vite-plus": "latest"
   },
   "overrides": {

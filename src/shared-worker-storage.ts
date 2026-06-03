@@ -199,15 +199,14 @@ function connectSharedWorker(
   namespace?: string,
   onError?: (error: Error) => void,
 ): PortAdapter {
-  // The `new URL(..., import.meta.url)` + `new SharedWorker` pattern is resolved
-  // at *build time* by this package's own bundler (Vite/Rolldown via `vp build`):
-  // it emits the worker as a hashed asset (`dist/assets/cache.worker-*.js`) and
-  // rewrites this reference to point at it, relative to the published module's
-  // `import.meta.url`. So the shipped artifact already carries the real worker
-  // URL — the consumer's bundler does not re-emit it; it only has to trace and
-  // copy that sibling asset into its output, keeping it same-origin. That
-  // same-origin requirement is what lets the SharedWorker actually be shared
-  // across tabs (a cross-origin copy would silently break sharing).
+  // This package builds with `vp pack` (tsdown), which ships `cache.worker.ts`
+  // as its own sibling entry (`dist/cache.worker.js`) and leaves this
+  // `new URL("./cache.worker.js", import.meta.url)` reference untouched, so at
+  // runtime it resolves relative to the published module's `import.meta.url`. The
+  // consumer's bundler does not re-emit the worker; it only has to trace and copy
+  // that sibling file into its output, keeping it same-origin. That same-origin
+  // requirement is what lets the SharedWorker actually be shared across tabs (a
+  // cross-origin copy would silently break sharing).
   const worker = new SharedWorker(new URL("./cache.worker.js", import.meta.url), {
     type: "module",
     name: namespace ? `${WORKER_NAME}:${namespace}` : WORKER_NAME,
