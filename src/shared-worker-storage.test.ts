@@ -94,6 +94,15 @@ describe("createSharedWorkerStorage", () => {
     await expect(inflight).rejects.toThrow(/disposed/);
   });
 
+  it("closes the port when disposed", () => {
+    const close = vi.fn();
+    const port: PortAdapter = { onmessage: null, postMessage() {}, close };
+    const storage = createSharedWorkerStorage({ port });
+    storage.dispose();
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(port.onmessage).toBeNull();
+  });
+
   it("disposes when the provided signal aborts", async () => {
     const deadPort: PortAdapter = { onmessage: null, postMessage() {} };
     const controller = new AbortController();

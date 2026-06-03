@@ -6,6 +6,8 @@ export interface PortAdapter {
   postMessage: (message: StorageRequest) => void;
   onmessage: ((event: MessageEvent<StorageResponse>) => void) | null;
   start?: () => void;
+  /** Close the underlying port; called on disposal. Real `MessagePort` has this. */
+  close?: () => void;
 }
 
 export interface SharedWorkerStorage extends AsyncStorage {
@@ -130,6 +132,7 @@ export function createSharedWorkerStorage(
       }
       pending.clear();
       port.onmessage = null;
+      port.close?.();
     },
   };
 
