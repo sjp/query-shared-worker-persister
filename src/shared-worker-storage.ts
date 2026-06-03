@@ -105,11 +105,15 @@ function connectSharedWorker(): PortAdapter {
         "This persister targets modern desktop browsers only and has no fallback.",
     );
   }
-  // Reference the *built* sibling (`dist/cache.worker.js`) by a plain relative
-  // URL. tsc leaves this expression verbatim, so the consumer's bundler sees the
-  // standard `new SharedWorker(new URL('./…', import.meta.url), { type: 'module' })`
-  // pattern and re-emits the worker at a stable, same-origin URL — which is what
-  // makes the SharedWorker actually shared across tabs.
+  // The `new URL(..., import.meta.url)` + `new SharedWorker` pattern is resolved
+  // at *build time* by this package's own bundler (Vite/Rolldown via `vp build`):
+  // it emits the worker as a hashed asset (`dist/assets/cache.worker-*.js`) and
+  // rewrites this reference to point at it, relative to the published module's
+  // `import.meta.url`. So the shipped artifact already carries the real worker
+  // URL — the consumer's bundler does not re-emit it; it only has to trace and
+  // copy that sibling asset into its output, keeping it same-origin. That
+  // same-origin requirement is what lets the SharedWorker actually be shared
+  // across tabs (a cross-origin copy would silently break sharing).
   const worker = new SharedWorker(new URL("./cache.worker.js", import.meta.url), {
     type: "module",
     name: "TANSTACK_QUERY_SHARED_CACHE_WORKER",
