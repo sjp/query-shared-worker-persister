@@ -5,6 +5,8 @@ import type { StorageRequest, StorageResponse } from "./worker/protocol";
 export interface PortAdapter {
   postMessage: (message: StorageRequest) => void;
   onmessage: ((event: MessageEvent<StorageResponse>) => void) | null;
+  /** Fired when an incoming message can't be deserialized. Real `MessagePort` has this. */
+  onmessageerror?: ((event: MessageEvent) => void) | null;
   start?: () => void;
   /** Close the underlying port; called on disposal. Real `MessagePort` has this. */
   close?: () => void;
@@ -86,10 +88,24 @@ export function createSharedWorkerStorage(
     return createNoopStorage();
   }
 
-  const port = options.port ?? connectSharedWorker(options.namespace);
-
   const pending = new Map<number, Pending>();
   let nextId = 1;
+
+  // A transport-level failure (worker failed to load, or a response that can't be
+  // deserialized) can't be tied to a single request id, so reject everything
+  // in flight rather than letting each call hang until its timeout. Logged too,
+  // since the most likely cause — a misresolved worker asset URL — is otherwise
+  // invisible until the 10s timeout.
+  function handleTransportError(error: Error) {
+    console.error(`[${PACKAGE_NAME}] ${error.message}`);
+    for (const entry of pending.values()) {
+      clearTimeout(entry.timer);
+      entry.reject(error);
+    }
+    pending.clear();
+  }
+
+  const port = options.port ?? connectSharedWorker(options.namespace, handleTransportError);
 
   port.onmessage = (event: MessageEvent<StorageResponse>) => {
     const message = event.data;
@@ -102,6 +118,9 @@ export function createSharedWorkerStorage(
     } else {
       entry.reject(new Error(message.error));
     }
+  };
+  port.onmessageerror = () => {
+    handleTransportError(new Error("SharedWorker sent a message that could not be deserialized"));
   };
   port.start?.();
 
@@ -132,6 +151,7 @@ export function createSharedWorkerStorage(
       }
       pending.clear();
       port.onmessage = null;
+      port.onmessageerror = null;
       port.close?.();
     },
   };
@@ -170,8 +190,15 @@ const WORKER_NAME = "TANSTACK_QUERY_SHARED_CACHE_WORKER";
  * Instantiate the shared `cache.worker.ts` and return its port. Callers must
  * have confirmed support (see {@link isSharedWorkerSupported}); reaching here
  * without `SharedWorker` would throw a raw `ReferenceError`.
+ *
+ * `onError` is invoked if the worker itself fails (most commonly because its
+ * asset URL didn't resolve in the consumer's bundle) so the storage can fail
+ * pending requests fast instead of waiting for each to time out.
  */
-function connectSharedWorker(namespace?: string): PortAdapter {
+function connectSharedWorker(
+  namespace?: string,
+  onError?: (error: Error) => void,
+): PortAdapter {
   // The `new URL(..., import.meta.url)` + `new SharedWorker` pattern is resolved
   // at *build time* by this package's own bundler (Vite/Rolldown via `vp build`):
   // it emits the worker as a hashed asset (`dist/assets/cache.worker-*.js`) and
@@ -185,5 +212,8 @@ function connectSharedWorker(namespace?: string): PortAdapter {
     type: "module",
     name: namespace ? `${WORKER_NAME}:${namespace}` : WORKER_NAME,
   });
+  worker.onerror = (event) => {
+    onError?.(new Error(`SharedWorker failed: ${event.message || "worker could not be started"}`));
+  };
   return worker.port;
 }

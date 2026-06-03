@@ -94,13 +94,29 @@ describe("createSharedWorkerStorage", () => {
     await expect(inflight).rejects.toThrow(/disposed/);
   });
 
-  it("closes the port when disposed", () => {
+  it("closes the port and detaches handlers when disposed", () => {
     const close = vi.fn();
     const port: PortAdapter = { onmessage: null, postMessage() {}, close };
     const storage = createSharedWorkerStorage({ port });
     storage.dispose();
     expect(close).toHaveBeenCalledTimes(1);
     expect(port.onmessage).toBeNull();
+    expect(port.onmessageerror).toBeNull();
+  });
+
+  it("rejects in-flight requests and logs when the port reports a message error", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const deadPort: PortAdapter = { onmessage: null, postMessage() {} };
+      const storage = createSharedWorkerStorage({ port: deadPort });
+      const inflight = storage.getItem("k");
+      deadPort.onmessageerror?.({} as MessageEvent);
+      await expect(inflight).rejects.toThrow(/deserialized/);
+      expect(error).toHaveBeenCalledTimes(1);
+      storage.dispose();
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it("disposes when the provided signal aborts", async () => {
