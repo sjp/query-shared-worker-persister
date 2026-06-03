@@ -1,6 +1,6 @@
 {
   "name": "@sjpnz/query-shared-worker-persister",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "A persister for storing query data in a SharedWorker, to be used with TanStack/Query",
   "homepage": "https://github.com/sjp/query-shared-worker-persister",
   "license": "MIT",
