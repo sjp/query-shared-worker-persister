@@ -1,7 +1,9 @@
 {
   "name": "@sjpnz/query-shared-worker-persister",
-  "description": "A persister for storing query data in a SharedWorker, to be used with TanStack/Query",
   "version": "0.1.1",
+  "description": "A persister for storing query data in a SharedWorker, to be used with TanStack/Query",
+  "homepage": "https://github.com/sjp/query-shared-worker-persister",
+  "license": "MIT",
   "author": {
     "name": "Simon Potter",
     "url": "https://sjp.co.nz"
@@ -10,36 +12,37 @@
     "type": "git",
     "url": "git+https://github.com/sjp/query-shared-worker-persister.git"
   },
-  "license": "MIT",
-  "homepage": "https://github.com/sjp/query-shared-worker-persister",
+  "files": [
+    "dist"
+  ],
   "type": "module",
+  "types": "dist/src/index.d.ts",
   "exports": {
     ".": {
       "import": "./dist/query-shared-worker-persister.js",
       "types": "./dist/src/index.d.ts"
     }
   },
-  "files": [
-    "dist"
-  ],
-  "types": "dist/src/index.d.ts",
   "scripts": {
-    "build": "tsc && vite build",
-    "lint": "npx @biomejs/biome lint --error-on-warnings",
-    "lint:fix": "npx @biomejs/biome check --write .",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "build": "tsc && vp build",
+    "lint": "vp lint",
+    "lint:fix": "vp check --fix",
+    "test": "vp test run",
+    "test:watch": "vp test"
   },
   "dependencies": {
     "@tanstack/query-async-storage-persister": "^5.100.14"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.0.4",
     "@microsoft/api-extractor": "^7.58.7",
     "@tanstack/query-persist-client-core": "^5.56.2",
     "typescript": "^6.0.2",
     "unplugin-dts": "^1.0.2",
-    "vite": "^8.0.0",
-    "vitest": "^4.1.0"
-  }
+    "vite-plus": "latest"
+  },
+  "overrides": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@latest",
+    "vitest": "npm:@voidzero-dev/vite-plus-test@latest"
+  },
+  "packageManager": "npm@11.16.0"
 }

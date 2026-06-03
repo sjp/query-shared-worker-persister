@@ -1,28 +1,14 @@
 {
-	"name": "Node.js & TypeScript",
-	"image": "mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm",
-
-	// Configure tool-specific properties.
-	"customizations": {
-		// Configure properties specific to VS Code.
-		"vscode": {
-			// Add the IDs of extensions you want installed when the container is created.
-			"extensions": [
-				"biomejs.biome"
-			]
-		}
-	},
-
-	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	// "forwardPorts": [],
-
-	// Use 'postCreateCommand' to run commands after the container is created.
-	// "postCreateCommand": "yarn install",
-
-	// Set `remoteUser` to `root` to connect as root instead. More info: https://aka.ms/vscode-remote/containers/non-root.
-	"remoteUser": "node",
-
-	"containerEnv": {
-		"HOME": "/home/node"
-	}
+  "name": "query-shared-worker-persister development",
+  "image": "mcr.microsoft.com/devcontainers/base:trixie",
+  "features": {
+    "ghcr.io/devcontainers/features/node:2": {
+      "version": "26"
+    },
+    "ghcr.io/helpers4/devcontainer/vite-plus:1": {},
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
+  },
+  "mounts": ["source=claude-code-config,target=/home/vscode/.claude,type=volume"],
+  "remoteUser": "vscode",
+  "postCreateCommand": "sudo chown -R $(id -u):$(id -g) ~/.claude && echo '{\"hasCompletedOnboarding\":true,\"numStartups\":1,\"installMethod\":\"npm\"}' > ~/.claude.json"
 }

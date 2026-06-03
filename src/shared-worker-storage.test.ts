@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { createSharedWorkerStorage, type PortAdapter } from "./shared-worker-storage";
 import type { StorageRequest, StorageResponse } from "./worker/protocol";
 import { CacheStore } from "./worker/store";
