@@ -18,7 +18,9 @@ export default defineConfig({
       entry: "./src/index.ts",
     },
   },
-  plugins: [dts()],
+  // Exclude tests from declaration emission so `dist` ships no `*.test.d.ts`.
+  // Tests stay type-checked by `tsc`/lint/vitest, which read tsconfig directly.
+  plugins: [dts({ exclude: ["**/*.test.ts", "node_modules/**"] })],
   worker: {
     format: "es",
   },
