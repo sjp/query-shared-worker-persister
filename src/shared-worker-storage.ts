@@ -42,18 +42,39 @@ interface Pending {
 }
 
 /**
+ * Reports whether SharedWorker-backed storage can run in this environment.
+ * Call this to decide up front whether to wire up the persister at all; if you
+ * build the storage anyway in an unsupported environment it degrades to a no-op
+ * (see {@link createSharedWorkerStorage}) rather than throwing.
+ */
+export function isSharedWorkerSupported(): boolean {
+  return typeof SharedWorker !== "undefined";
+}
+
+/**
  * Build a SharedWorker-backed {@link AsyncStorage}. All three storage methods
  * round-trip a {@link StorageRequest} to the worker and await the response with
  * the matching `id`, so concurrent calls never cross wires.
  *
- * With no `port` injected this spins up the shared `cache.worker.ts`. Per the
- * project's no-fallback decision, it throws if `SharedWorker` is unavailable
- * rather than silently degrading.
+ * With no `port` injected this spins up the shared `cache.worker.ts`. When
+ * `SharedWorker` is unavailable (e.g. Chrome on Android, some webviews) it falls
+ * back to a no-op storage — TanStack Query then runs with its normal in-memory
+ * cache and no cross-tab persistence — and logs a single warning. Use
+ * {@link isSharedWorkerSupported} to detect and branch before reaching this.
  */
 export function createSharedWorkerStorage(
   options: CreateSharedWorkerStorageOptions = {},
 ): SharedWorkerStorage {
   const { timeoutMs = 10_000 } = options;
+
+  if (!options.port && !isSharedWorkerSupported()) {
+    console.warn(
+      `[${PACKAGE_NAME}] SharedWorker is unavailable in this environment; ` +
+        "falling back to no-op storage. The query cache will not be persisted or " +
+        "shared across tabs. Use isSharedWorkerSupported() to branch beforehand.",
+    );
+    return createNoopStorage();
+  }
 
   const port = options.port ?? connectSharedWorker(options.namespace);
 
@@ -105,17 +126,32 @@ export function createSharedWorkerStorage(
   };
 }
 
+/** Used to prefix the console warning so it's traceable to this package. */
+const PACKAGE_NAME = "@sjpnz/query-shared-worker-persister";
+
+/**
+ * Storage that quietly does nothing: `getItem` always resolves `null` (so
+ * TanStack Query restores nothing and just fetches), and writes are dropped.
+ * Returned when `SharedWorker` is unavailable so callers can keep one code path.
+ */
+function createNoopStorage(): SharedWorkerStorage {
+  return {
+    getItem: () => Promise.resolve(null),
+    setItem: () => Promise.resolve(),
+    removeItem: () => Promise.resolve(),
+    dispose: () => {},
+  };
+}
+
 /** Base SharedWorker name; a `namespace` is appended to isolate per app. */
 const WORKER_NAME = "TANSTACK_QUERY_SHARED_CACHE_WORKER";
 
-/** Instantiate the shared `cache.worker.ts` and return its port. */
+/**
+ * Instantiate the shared `cache.worker.ts` and return its port. Callers must
+ * have confirmed support (see {@link isSharedWorkerSupported}); reaching here
+ * without `SharedWorker` would throw a raw `ReferenceError`.
+ */
 function connectSharedWorker(namespace?: string): PortAdapter {
-  if (typeof SharedWorker === "undefined") {
-    throw new Error(
-      "SharedWorker is not available in this environment. " +
-        "This persister targets modern desktop browsers only and has no fallback.",
-    );
-  }
   // The `new URL(..., import.meta.url)` + `new SharedWorker` pattern is resolved
   // at *build time* by this package's own bundler (Vite/Rolldown via `vp build`):
   // it emits the worker as a hashed asset (`dist/assets/cache.worker-*.js`) and

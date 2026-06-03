@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vite-plus/test";
-import { createSharedWorkerStorage, type PortAdapter } from "./shared-worker-storage";
+import { describe, expect, it, vi } from "vite-plus/test";
+import {
+  createSharedWorkerStorage,
+  isSharedWorkerSupported,
+  type PortAdapter,
+} from "./shared-worker-storage";
 import type { StorageRequest, StorageResponse } from "./worker/protocol";
 import { CacheStore } from "./worker/store";
 
@@ -88,5 +92,67 @@ describe("createSharedWorkerStorage", () => {
     const inflight = storage.getItem("k");
     storage.dispose();
     await expect(inflight).rejects.toThrow(/disposed/);
+  });
+});
+
+/** Run `fn` with `globalThis.SharedWorker` forced present/absent, then restore. */
+async function withSharedWorker(value: unknown, fn: () => void | Promise<void>) {
+  const g = globalThis as { SharedWorker?: unknown };
+  const had = "SharedWorker" in g;
+  const original = g.SharedWorker;
+  if (value === undefined) delete g.SharedWorker;
+  else g.SharedWorker = value;
+  try {
+    await fn();
+  } finally {
+    if (had) g.SharedWorker = original;
+    else delete g.SharedWorker;
+  }
+}
+
+describe("isSharedWorkerSupported", () => {
+  it("is false when SharedWorker is absent", async () => {
+    await withSharedWorker(undefined, () => {
+      expect(isSharedWorkerSupported()).toBe(false);
+    });
+  });
+
+  it("is true when SharedWorker is present", async () => {
+    await withSharedWorker(class FakeSharedWorker {}, () => {
+      expect(isSharedWorkerSupported()).toBe(true);
+    });
+  });
+});
+
+describe("no-op fallback when SharedWorker is unavailable", () => {
+  it("returns a no-op storage (never persists) and warns once", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await withSharedWorker(undefined, async () => {
+        const storage = createSharedWorkerStorage();
+        await storage.setItem("k", "v");
+        await expect(storage.getItem("k")).resolves.toBeNull();
+        await storage.removeItem("k");
+        expect(() => storage.dispose()).not.toThrow();
+        expect(warn).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("does not warn or fall back when a port is injected", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await withSharedWorker(undefined, async () => {
+        const storage = createSharedWorkerStorage({ port: createFakePort() });
+        await storage.setItem("k", "v");
+        await expect(storage.getItem("k")).resolves.toBe("v");
+        expect(warn).not.toHaveBeenCalled();
+        storage.dispose();
+      });
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

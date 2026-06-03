@@ -79,6 +79,23 @@ Follow these steps to configure `QueryClient` persistence. While the examples us
    }
    ```
 
+## Browser Support
+
+This package relies on [`SharedWorker`](https://developer.mozilla.org/en-US/docs/Web/API/SharedWorker), which is available in modern desktop browsers but **not** in some environments such as Chrome on Android and certain in-app webviews.
+
+When `SharedWorker` is unavailable, the persister degrades gracefully to a no-op storage: TanStack Query keeps working with its normal in-memory cache, just without cross-tab persistence. A single warning is logged to the console so the fallback is visible during development.
+
+If you'd rather branch on support yourself — for example to skip wiring up persistence entirely — use the exported check:
+
+```typescript
+import {
+  createSharedWorkerPersister,
+  isSharedWorkerSupported,
+} from "@sjpnz/query-shared-worker-persister";
+
+const persister = isSharedWorkerSupported() ? createSharedWorkerPersister() : undefined;
+```
+
 ## Recommendations
 
 To get the most out of this package and ensure optimal performance, consider the following recommendations:
