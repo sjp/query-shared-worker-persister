@@ -19,11 +19,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
-      - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v6
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@v1
         with:
           node-version: ${{ matrix.node-version }}
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run build
-      - run: npm run test
+          cache: true
+      - run: vp install --frozen-lockfile
+      - run: vp run lint
+      - run: vp run build
+      - run: vp run test
