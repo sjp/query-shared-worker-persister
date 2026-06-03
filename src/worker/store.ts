@@ -13,7 +13,6 @@ export class CacheStore {
   private readonly map = new Map<string, string>();
 
   getItem(key: string): string | null {
-    // biome-ignore lint/style/noNonNullAssertion: trust the underlying store
     return this.map.has(key) ? this.map.get(key)! : null;
   }
 
