@@ -9,6 +9,12 @@ export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptio
    * the per-origin default. See {@link createSharedWorkerStorage}'s `namespace`.
    */
   namespace?: string;
+  /**
+   * Dispose the underlying SharedWorker storage when this signal aborts. Since
+   * this convenience wrapper hides the storage's `dispose()`, the signal is the
+   * way to bound its lifetime. See {@link createSharedWorkerStorage}'s `signal`.
+   */
+  signal?: AbortSignal;
 };
 
 /**
@@ -17,7 +23,7 @@ export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptio
  * `PersistQueryClientProvider`'s `persistOptions.persister`.
  */
 export function createSharedWorkerPersister(options: CreateSharedWorkerPersisterOptions = {}) {
-  const { namespace, ...persisterOptions } = options;
-  const storage = createSharedWorkerStorage({ namespace });
+  const { namespace, signal, ...persisterOptions } = options;
+  const storage = createSharedWorkerStorage({ namespace, signal });
   return createAsyncStoragePersister({ throttleTime: 1_000, ...persisterOptions, storage });
 }

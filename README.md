@@ -96,6 +96,18 @@ import {
 const persister = isSharedWorkerSupported() ? createSharedWorkerPersister() : undefined;
 ```
 
+### Disposal
+
+Most apps keep a single persister for the page's lifetime and never need to dispose it. If you do recreate the persister (for example in tests, micro-frontends, or hot-module reloads), pass an `AbortSignal` to release the underlying SharedWorker connection when you're done:
+
+```typescript
+const controller = new AbortController();
+const persister = createSharedWorkerPersister({ signal: controller.signal });
+
+// later, to tear it down:
+controller.abort();
+```
+
 ## Recommendations
 
 To get the most out of this package and ensure optimal performance, consider the following recommendations:

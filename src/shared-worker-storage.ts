@@ -25,6 +25,14 @@ export interface CreateSharedWorkerStorageOptions {
    */
   namespace?: string;
   /**
+   * Tear the storage down when this signal aborts — reject any in-flight
+   * requests and detach the port, exactly as calling `dispose()` would. Lets
+   * callers that only hold the persister (e.g. via `createSharedWorkerPersister`)
+   * still bound its lifetime. If the signal is already aborted, the storage is
+   * disposed immediately.
+   */
+  signal?: AbortSignal;
+  /**
    * Inject a port instead of creating a real `SharedWorker`. Used by tests to
    * pipe messages through an in-process store; not needed in app code.
    */
@@ -107,7 +115,7 @@ export function createSharedWorkerStorage(
     });
   }
 
-  return {
+  const storage: SharedWorkerStorage = {
     getItem: (key) => request({ kind: "request", op: "getItem", key }),
     setItem: async (key, value) => {
       await request({ kind: "request", op: "setItem", key, value });
@@ -124,6 +132,15 @@ export function createSharedWorkerStorage(
       port.onmessage = null;
     },
   };
+
+  // Bind disposal to the caller's signal. `dispose` is idempotent, so an abort
+  // after a manual dispose (or vice versa) is harmless.
+  if (options.signal) {
+    if (options.signal.aborted) storage.dispose();
+    else options.signal.addEventListener("abort", () => storage.dispose(), { once: true });
+  }
+
+  return storage;
 }
 
 /** Used to prefix the console warning so it's traceable to this package. */

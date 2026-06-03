@@ -93,6 +93,22 @@ describe("createSharedWorkerStorage", () => {
     storage.dispose();
     await expect(inflight).rejects.toThrow(/disposed/);
   });
+
+  it("disposes when the provided signal aborts", async () => {
+    const deadPort: PortAdapter = { onmessage: null, postMessage() {} };
+    const controller = new AbortController();
+    const storage = createSharedWorkerStorage({ port: deadPort, signal: controller.signal });
+    const inflight = storage.getItem("k");
+    controller.abort();
+    await expect(inflight).rejects.toThrow(/disposed/);
+  });
+
+  it("disposes immediately when given an already-aborted signal", () => {
+    const port = createFakePort();
+    createSharedWorkerStorage({ port, signal: AbortSignal.abort() });
+    // Disposal detaches the port handler, so no responses are ever processed.
+    expect(port.onmessage).toBeNull();
+  });
 });
 
 /** Run `fn` with `globalThis.SharedWorker` forced present/absent, then restore. */
