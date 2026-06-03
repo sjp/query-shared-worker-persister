@@ -3,7 +3,13 @@ import { createSharedWorkerStorage } from "./shared-worker-storage";
 
 /** Options for {@link createAsyncStoragePersister}, minus the `storage` we supply. */
 type AsyncStoragePersisterOptions = Parameters<typeof createAsyncStoragePersister>[0];
-export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptions, "storage">;
+export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptions, "storage"> & {
+  /**
+   * Isolate this app's cache in its own SharedWorker process instead of sharing
+   * the per-origin default. See {@link createSharedWorkerStorage}'s `namespace`.
+   */
+  namespace?: string;
+};
 
 /**
  * One-call convenience: build a SharedWorker-backed `AsyncStorage` and wrap it
@@ -11,6 +17,7 @@ export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptio
  * `PersistQueryClientProvider`'s `persistOptions.persister`.
  */
 export function createSharedWorkerPersister(options: CreateSharedWorkerPersisterOptions = {}) {
-  const storage = createSharedWorkerStorage();
-  return createAsyncStoragePersister({ throttleTime: 1_000, ...options, storage });
+  const { namespace, ...persisterOptions } = options;
+  const storage = createSharedWorkerStorage({ namespace });
+  return createAsyncStoragePersister({ throttleTime: 1_000, ...persisterOptions, storage });
 }

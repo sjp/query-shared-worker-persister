@@ -17,6 +17,14 @@ export interface CreateSharedWorkerStorageOptions {
   /** Reject a pending request after this many ms. Default 10s. */
   timeoutMs?: number;
   /**
+   * Isolate this app's cache in its own SharedWorker process. SharedWorkers are
+   * keyed by `(scriptURL, name)`, so every app on an origin otherwise shares one
+   * worker — and any same-origin context can read the whole store. Pass a unique
+   * `namespace` to get a dedicated worker (and a dedicated `CacheStore`) instead.
+   * Omit it to keep the shared default.
+   */
+  namespace?: string;
+  /**
    * Inject a port instead of creating a real `SharedWorker`. Used by tests to
    * pipe messages through an in-process store; not needed in app code.
    */
@@ -47,7 +55,7 @@ export function createSharedWorkerStorage(
 ): SharedWorkerStorage {
   const { timeoutMs = 10_000 } = options;
 
-  const port = options.port ?? connectSharedWorker();
+  const port = options.port ?? connectSharedWorker(options.namespace);
 
   const pending = new Map<number, Pending>();
   let nextId = 1;
@@ -97,8 +105,11 @@ export function createSharedWorkerStorage(
   };
 }
 
+/** Base SharedWorker name; a `namespace` is appended to isolate per app. */
+const WORKER_NAME = "TANSTACK_QUERY_SHARED_CACHE_WORKER";
+
 /** Instantiate the shared `cache.worker.ts` and return its port. */
-function connectSharedWorker(): PortAdapter {
+function connectSharedWorker(namespace?: string): PortAdapter {
   if (typeof SharedWorker === "undefined") {
     throw new Error(
       "SharedWorker is not available in this environment. " +
@@ -116,7 +127,7 @@ function connectSharedWorker(): PortAdapter {
   // across tabs (a cross-origin copy would silently break sharing).
   const worker = new SharedWorker(new URL("./cache.worker.js", import.meta.url), {
     type: "module",
-    name: "TANSTACK_QUERY_SHARED_CACHE_WORKER",
+    name: namespace ? `${WORKER_NAME}:${namespace}` : WORKER_NAME,
   });
   return worker.port;
 }

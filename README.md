@@ -124,6 +124,15 @@ To get the most out of this package and ensure optimal performance, consider the
    });
    ```
 
+   By default every application on an origin shares a single `SharedWorker` (and therefore a single in-memory store), with `key` namespacing the entry within it. If you want a fully isolated worker process per application — so that other same-origin apps can't read your cached values — pass a `namespace` as well:
+
+   ```typescript
+   const persister = createSharedWorkerPersister({
+     key: APP_NAME,
+     namespace: APP_NAME, // dedicated SharedWorker, isolated from other apps on this origin
+   });
+   ```
+
 3. Implement Cache Busting
 
    Provide an application version to invalidate the cache when it doesn't match the current application version. This ensures that outdated data isn't persisted when one tab/window has a newer application version than another.
