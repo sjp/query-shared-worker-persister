@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 
-import type { StorageRequest, StorageResponse } from "./worker/protocol";
+import { handleConnect } from "./worker/connection";
 import { CacheStore } from "./worker/store";
 
 /**
@@ -9,9 +9,8 @@ import { CacheStore } from "./worker/store";
  * terminates it (dropping `store` with it) when the last tab closes. That is
  * what ties the cache's lifetime to the number of open tabs.
  *
- * Its sole job is to hold the one shared {@link CacheStore} and answer storage
- * requests on each connected port, echoing the request `id` so the client can
- * match responses to calls.
+ * Its sole job is to hold the one shared {@link CacheStore} and hand each newly
+ * connected port to {@link handleConnect}, which answers storage requests on it.
  */
 
 // `self` in a SharedWorker is a SharedWorkerGlobalScope. We cast rather than
@@ -20,25 +19,4 @@ const ctx = self as unknown as SharedWorkerGlobalScope;
 
 const store = new CacheStore();
 
-ctx.onconnect = (event: MessageEvent) => {
-  const port = event.ports[0];
-  if (!port) return; // a connect event always carries its port; guard for the types
-
-  port.onmessage = (e: MessageEvent<StorageRequest>) => {
-    const request = e.data;
-    let response: StorageResponse;
-    try {
-      response = { kind: "response", id: request.id, ok: true, result: store.handle(request) };
-    } catch (err) {
-      response = {
-        kind: "response",
-        id: request.id,
-        ok: false,
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
-    port.postMessage(response);
-  };
-
-  port.start();
-};
+ctx.onconnect = (event: MessageEvent) => handleConnect(store, event.ports[0]);
