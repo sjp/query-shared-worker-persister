@@ -2,7 +2,7 @@
   "name": "query-shared-worker-persister development",
   "image": "mcr.microsoft.com/devcontainers/base:trixie",
   "features": {
-    "ghcr.io/devcontainers/features/node:2": {
+    "ghcr.io/devcontainers/features/node:": {
       "version": "26"
     },
     "ghcr.io/helpers4/devcontainer/vite-plus:": {},
