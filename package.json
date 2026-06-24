@@ -36,11 +36,10 @@
   "devDependencies": {
     "@tanstack/query-persist-client-core": "^5.56.2",
     "typescript": "^6.0.2",
-    "vite-plus": "latest"
+    "vite-plus": "0.2.1"
   },
   "overrides": {
-    "vite": "npm:@voidzero-dev/vite-plus-core@latest",
-    "vitest": "npm:@voidzero-dev/vite-plus-test@latest"
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.2.1"
   },
   "packageManager": "npm@11.16.0"
 }
