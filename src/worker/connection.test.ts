@@ -17,12 +17,14 @@ describe("respond", () => {
 
   it("returns ok with a null result for writes", () => {
     const store = new CacheStore();
-    expect(respond(store, { kind: "request", id: 1, op: "setItem", key: "k", value: "v" })).toEqual({
-      kind: "response",
-      id: 1,
-      ok: true,
-      result: null,
-    });
+    expect(respond(store, { kind: "request", id: 1, op: "setItem", key: "k", value: "v" })).toEqual(
+      {
+        kind: "response",
+        id: 1,
+        ok: true,
+        result: null,
+      },
+    );
     expect(store.getItem("k")).toBe("v");
   });
 

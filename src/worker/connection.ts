@@ -19,7 +19,10 @@ export interface WorkerPort {
  * store becomes an `ok: false` response rather than crashing the port. Kept here
  * (out of `cache.worker.ts`) so this success/error mapping is unit-tested.
  */
-export function respond(store: Pick<CacheStore, "handle">, request: StorageRequest): StorageResponse {
+export function respond(
+  store: Pick<CacheStore, "handle">,
+  request: StorageRequest,
+): StorageResponse {
   try {
     return { kind: "response", id: request.id, ok: true, result: store.handle(request) };
   } catch (err) {

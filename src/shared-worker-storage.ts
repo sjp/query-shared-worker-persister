@@ -195,10 +195,7 @@ const WORKER_NAME = "TANSTACK_QUERY_SHARED_CACHE_WORKER";
  * asset URL didn't resolve in the consumer's bundle) so the storage can fail
  * pending requests fast instead of waiting for each to time out.
  */
-function connectSharedWorker(
-  namespace?: string,
-  onError?: (error: Error) => void,
-): PortAdapter {
+function connectSharedWorker(namespace?: string, onError?: (error: Error) => void): PortAdapter {
   // This package builds with `vp pack` (tsdown), which ships `cache.worker.ts`
   // as its own sibling entry (`dist/cache.worker.js`) and leaves this
   // `new URL("./cache.worker.js", import.meta.url)` reference untouched, so at

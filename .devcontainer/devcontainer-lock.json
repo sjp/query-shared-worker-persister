@@ -19,17 +19,13 @@
       "version": "1.0.7",
       "resolved": "ghcr.io/helpers4/devcontainer/typescript-dev@sha256:76abf803b00fcfaa628588e0f6e0c532c590fabdd88748a65557a83d66de3f6d",
       "integrity": "sha256:76abf803b00fcfaa628588e0f6e0c532c590fabdd88748a65557a83d66de3f6d",
-      "dependsOn": [
-        "ghcr.io/helpers4/devcontainer/essential-dev:1"
-      ]
+      "dependsOn": ["ghcr.io/helpers4/devcontainer/essential-dev:1"]
     },
     "ghcr.io/helpers4/devcontainer/vite-plus:": {
       "version": "1.0.7",
       "resolved": "ghcr.io/helpers4/devcontainer/vite-plus@sha256:d958f9f12d56dea65a4b63821e47d47ffd67ea25642053c9cc088990e7044352",
       "integrity": "sha256:d958f9f12d56dea65a4b63821e47d47ffd67ea25642053c9cc088990e7044352",
-      "dependsOn": [
-        "ghcr.io/helpers4/devcontainer/typescript-dev:1"
-      ]
+      "dependsOn": ["ghcr.io/helpers4/devcontainer/typescript-dev:1"]
     }
   }
 }
