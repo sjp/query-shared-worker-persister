@@ -39,7 +39,7 @@
     "vite-plus": "0.2.2"
   },
   "overrides": {
-    "vite": "npm:@voidzero-dev/vite-plus-core@0.2.1"
+    "vite": "npm:@voidzero-dev/vite-plus-core@0.2.2"
   },
   "packageManager": "npm@11.16.0"
 }
