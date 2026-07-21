@@ -23,6 +23,7 @@
       "import": "./dist/index.js"
     }
   },
+  "sideEffects": ["**/cache.worker.js"],
   "scripts": {
     "build": "tsc && vp pack",
     "lint": "vp lint",
