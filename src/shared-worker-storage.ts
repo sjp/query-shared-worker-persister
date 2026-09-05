@@ -190,8 +190,10 @@ export interface CreateSharedWorkerStorageOptions {
    * `new URL("./cache.worker.js", import.meta.url)`, which every modern bundler
    * has to recognise inside a dependency in order to copy the asset into the
    * output; point this at a copy you host yourself when your build doesn't. The
-   * URL must be same-origin — a cross-origin worker script can't be loaded, so
-   * nothing would be shared.
+   * URL must be on the page's own origin: a cross-origin worker script can't be
+   * loaded, and a store is shared per origin in any case, so one that resolves
+   * elsewhere is refused with a `TypeError` here rather than left to surface as
+   * a browser that wouldn't build the worker.
    *
    * The URL is also half of the worker's identity, the other half being `name`,
    * so tabs share a store only while they agree on it: pass the same value in
@@ -323,18 +325,24 @@ function isDocumentEnvironment(): boolean {
  * case it goes there and the console is left alone. Each report is a
  * {@link SharedWorkerStorageError} carrying a `code` for the kind of failure.
  *
- * An out-of-range `timeoutMs` is the one thing that throws rather than being
- * reported: it is a programming error, and a deadline no timer can honour would
- * otherwise leave the cache silently and permanently cold. See
- * {@link CreateSharedWorkerStorageOptions.timeoutMs} for the accepted range.
+ * Two options throw rather than being reported, because each can only be a
+ * programming error and each would otherwise leave the cache silently and
+ * permanently cold: an out-of-range `timeoutMs`, a deadline no timer can honour
+ * (see {@link CreateSharedWorkerStorageOptions.timeoutMs} for the accepted
+ * range), and a `workerUrl` pointing at another origin, a script no browser
+ * will load.
  */
 export function createSharedWorkerStorage(
   options: CreateSharedWorkerStorageOptions = {},
 ): SharedWorkerStorage {
   const { timeoutMs = 10_000 } = options;
   // Before the support check, so a bad option is a hard error everywhere rather
-  // than one that only surfaces in environments that have a SharedWorker.
+  // than one that only surfaces in environments that have a SharedWorker. A
+  // `workerUrl` is exempt where a port was injected, which replaces worker
+  // construction entirely: that URL is never loaded, so it never has to be
+  // loadable.
   validateTimeoutMs(timeoutMs);
+  if (!options.port && options.workerUrl !== undefined) validateWorkerUrl(options.workerUrl);
 
   // A signal that aborted before this call asks for a storage that is over
   // before it begins. Nothing is set up for one: no worker is constructed only
@@ -759,6 +767,45 @@ function validateTimeoutMs(timeoutMs: number): void {
   }
 }
 
+/**
+ * Reject a `workerUrl` this page could never load a worker from, before
+ * anything is built.
+ *
+ * `new SharedWorker(url)` answers a cross-origin script with a `SecurityError`,
+ * which arrives here indistinguishable from a browser that refuses workers at
+ * all and so reads as an environment to degrade in rather than an option to
+ * fix. It is the option: a worker script has to be same-origin, and a store is
+ * shared per origin in any case, so a copy on an asset domain would share
+ * nothing even if it loaded. Naming both origins says that outright.
+ *
+ * Two cases are deliberately left to the constructor. Without a `location`
+ * there is no origin to compare against and no worker being built anyway — a
+ * server rendering the page — and a value that is not a URL at all can't be
+ * placed on an origin, so it is reported with the browser's own reason for
+ * refusing it. So is anything on an opaque origin (a sandboxed iframe, a
+ * `blob:`, `data:` or `file:` page), where no URL would have worked and the
+ * no-op fallback is the better answer than a throw.
+ */
+function validateWorkerUrl(workerUrl: string | URL): void {
+  if (typeof location === "undefined") return;
+  const page = new URL(location.href);
+  if (page.origin === "null") return;
+  let resolved: URL;
+  try {
+    resolved = new URL(workerUrl, page);
+  } catch {
+    // Not a URL, so not one that can be placed on an origin.
+    return;
+  }
+  if (resolved.origin === page.origin) return;
+  throw new TypeError(
+    `[${PACKAGE_NAME}] workerUrl must be on the page's own origin: the page is ` +
+      `${page.origin} and ${String(workerUrl)} resolves to ${resolved.origin}. ` +
+      "A cross-origin worker script cannot be loaded, and a store is shared per " +
+      "origin in any case; serve a copy of cache.worker.js from this origin instead.",
+  );
+}
+
 /** The rejection every request made after `dispose()` gets. */
 function disposedError(): SharedWorkerStorageError {
   return new SharedWorkerStorageError("disposed", "SharedWorker storage disposed");
@@ -845,9 +892,11 @@ interface SharedWorkerConnection {
  * `detach` that takes this package's handler back off the worker, or
  * `undefined` if the constructor rejected the call — an opaque origin, a `blob:`/`data:`/
  * `file:` document, or a policy that disables workers all expose `SharedWorker`
- * and then throw on construction. That is reported like an unsupported
- * environment, under the same `unsupported` code, and the caller degrades to
- * no-op storage.
+ * and then throw on construction, as does a `workerUrl` that is not a URL the
+ * page can load. That is reported under the `unsupported` code and the caller
+ * degrades to no-op storage; the report is phrased around `workerUrl` when
+ * there is one, since a URL the caller chose is the likelier culprit than the
+ * environment and is the thing they can act on.
  * Callers must still have confirmed support (see
  * {@link isSharedWorkerSupported}); reaching here without `SharedWorker` at all
  * would throw a raw `ReferenceError`.
@@ -888,15 +937,19 @@ function connectSharedWorker(
       name: namespace ? `${WORKER_NAME}:${namespace}` : WORKER_NAME,
     });
   } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    const refusal =
+      workerUrl === undefined
+        ? `SharedWorker could not be created in this environment (${reason})`
+        : `SharedWorker could not be created from workerUrl ${String(workerUrl)} ` +
+          `(${reason}); check that it names a script this page can load`;
     report(
       options,
       "warn",
       new SharedWorkerStorageError(
         "unsupported",
-        "SharedWorker could not be created in this environment " +
-          `(${cause instanceof Error ? cause.message : String(cause)}); falling back ` +
-          "to no-op storage. The query cache will not be persisted or shared across " +
-          "tabs.",
+        `${refusal}; falling back to no-op storage. The query cache will not be ` +
+          "persisted or shared across tabs.",
         { cause },
       ),
     );

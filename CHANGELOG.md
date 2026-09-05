@@ -23,7 +23,11 @@ history, so they summarise the visible behaviour rather than every change.
 - `timeoutMs` on `createSharedWorkerPersister`, which previously could not configure the
   request timeout that `createSharedWorkerStorage` accepts.
 - `workerUrl` on both `createSharedWorkerStorage` and `createSharedWorkerPersister`, for builds
-  that cannot copy `cache.worker.js` out of `node_modules` and host the asset themselves.
+  that cannot copy `cache.worker.js` out of `node_modules` and host the asset themselves. It
+  must be on the page's own origin — a cross-origin worker script cannot be loaded, and a store
+  is shared per origin in any case — so one that resolves elsewhere throws a `TypeError` when
+  the storage or persister is created, and a URL the browser itself refuses is reported naming
+  that URL rather than the environment.
 - `onError` on both `createSharedWorkerStorage` and `createSharedWorkerPersister`, which takes
   the warnings and errors that previously only went to the console — the no-op fallback, a
   worker that failed, a read that resolved empty — so an application can log or report them

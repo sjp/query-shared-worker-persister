@@ -9,7 +9,13 @@ import {
   type SharedWorkerStorage,
   SharedWorkerStorageError,
 } from "./shared-worker-storage";
-import { createFakePort, fakeSharedWorker, withDocument, withSharedWorker } from "./test-utils";
+import {
+  createFakePort,
+  fakeSharedWorker,
+  withDocument,
+  withLocation,
+  withSharedWorker,
+} from "./test-utils";
 import { respond } from "./worker/connection";
 import {
   PROTOCOL_VERSION,
@@ -439,6 +445,92 @@ describe("the timeoutMs option", () => {
 });
 
 /**
+ * A worker script has to be served from the page's own origin, so a URL on
+ * another one can only be a mistake in the option - and the browser's answer to
+ * it, a SecurityError out of the constructor, is the same answer it gives an
+ * environment that refuses workers outright. Caught here instead, where the
+ * option can be named.
+ */
+describe("the workerUrl option", () => {
+  const page = { href: "https://app.test/index.html" };
+
+  it("throws for a cross-origin URL, naming the option and both origins", async () => {
+    await withLocation(page, () => {
+      const cdn = "https://cdn.test/cache.worker.js";
+      expect(() => createSharedWorkerStorage({ workerUrl: cdn })).toThrow(TypeError);
+      expect(() => createSharedWorkerStorage({ workerUrl: cdn })).toThrow(
+        /workerUrl must be on the page's own origin: the page is https:\/\/app\.test and https:\/\/cdn\.test\/cache\.worker\.js resolves to https:\/\/cdn\.test/,
+      );
+      // A URL object is the same mistake in the other accepted type.
+      expect(() => createSharedWorkerStorage({ workerUrl: new URL(cdn) })).toThrow(TypeError);
+    });
+  });
+
+  it("accepts a URL on the page's own origin, however it is written", async () => {
+    const { FakeSharedWorker } = fakeSharedWorker({ dead: true });
+    await withLocation(page, () =>
+      withSharedWorker(FakeSharedWorker, () => {
+        for (const workerUrl of [
+          "/static/cache.worker.js",
+          "cache.worker.js",
+          "https://app.test/static/cache.worker.js",
+          new URL("https://app.test/static/cache.worker.js"),
+        ]) {
+          const storage = createSharedWorkerStorage({ workerUrl });
+          expect(storage.mode).toBe("shared-worker");
+          storage.dispose();
+        }
+      }),
+    );
+  });
+
+  it("throws even where SharedWorker is unavailable, so the option is checked everywhere", async () => {
+    await withLocation(page, () =>
+      withSharedWorker(undefined, () => {
+        expect(() => createSharedWorkerStorage({ workerUrl: "https://cdn.test/w.js" })).toThrow(
+          TypeError,
+        );
+      }),
+    );
+  });
+
+  it("holds it against nothing where there is no page", async () => {
+    // A server evaluating the module that builds the persister: no origin to
+    // compare against, and no worker being constructed either way.
+    let storage!: SharedWorkerStorage;
+    expect(() => {
+      storage = createSharedWorkerStorage({ workerUrl: "https://cdn.test/w.js" });
+    }).not.toThrow();
+    expect(storage.mode).toBe("noop");
+  });
+
+  it("leaves it alone on an opaque origin, where no URL would have worked", async () => {
+    // A sandboxed iframe or a `file:` page has no origin to match, and the
+    // constructor refuses every worker there. That refusal is the no-op
+    // fallback, which serves the caller better than a throw.
+    const { FakeSharedWorker } = fakeSharedWorker({ dead: true });
+    await withLocation({ href: "file:///app/index.html" }, () =>
+      withSharedWorker(FakeSharedWorker, () => {
+        expect(() =>
+          createSharedWorkerStorage({ workerUrl: "https://cdn.test/w.js" }).dispose(),
+        ).not.toThrow();
+      }),
+    );
+  });
+
+  it("is not checked when a port is injected, since no worker is constructed", async () => {
+    await withLocation(page, async () => {
+      using storage = createSharedWorkerStorage({
+        port: createFakePort(),
+        workerUrl: "https://cdn.test/cache.worker.js",
+      });
+      await storage.setItem("k", "v");
+      await expect(storage.getItem("k")).resolves.toBe("v");
+    });
+  });
+});
+
+/**
  * `persistQueryClient` reads a rejected restore as a corrupt cache and answers
  * it by calling `removeClient()` - which, on a store the worker shares, deletes
  * the entry every other tab is using. A tab that was merely slow would take the
@@ -675,6 +767,30 @@ describe("no-op fallback when SharedWorker is unavailable", () => {
         expect(reported).toBeInstanceOf(SharedWorkerStorageError);
         expect((reported as SharedWorkerStorageError).code).toBe("unsupported");
         expect((reported as SharedWorkerStorageError).cause).toBeInstanceOf(DOMException);
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("names the workerUrl when the constructor refuses that instead", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // What a URL the page can't load gets: same code path as the opaque
+      // origin above, but the caller chose the URL, so that is what the report
+      // puts first - a mistyped or unhosted path is their configuration, not
+      // this browser's limits.
+      class ThrowingSharedWorker {
+        constructor() {
+          throw new DOMException("the URL is invalid", "SyntaxError");
+        }
+      }
+      await withSharedWorker(ThrowingSharedWorker, () => {
+        const storage = createSharedWorkerStorage({ workerUrl: "/static/cache.worker.js" });
+        expect(storage.mode).toBe("noop");
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0]?.[0]).toContain("workerUrl /static/cache.worker.js");
+        expect(warn.mock.calls[0]?.[0]).toContain("the URL is invalid");
       });
     } finally {
       warn.mockRestore();

@@ -73,6 +73,28 @@ export async function withDocument<T>(value: unknown, fn: () => T | Promise<T>):
   }
 }
 
+/**
+ * Run `fn` with `globalThis.location` forced present/absent, then restore,
+ * handing back whatever `fn` returned.
+ *
+ * The Node suite has no `location` either, so the client treats it as it does a
+ * server: there is no page origin to hold a `workerUrl` against. Wrap a test in
+ * this — `withLocation({ href: "https://app.test/" }, ...)` — to give it one.
+ */
+export async function withLocation<T>(value: unknown, fn: () => T | Promise<T>): Promise<T> {
+  const g = globalThis as { location?: unknown };
+  const had = "location" in g;
+  const original = g.location;
+  if (value === undefined) delete g.location;
+  else g.location = value;
+  try {
+    return await fn();
+  } finally {
+    if (had) g.location = original;
+    else delete g.location;
+  }
+}
+
 /** One `new SharedWorker(...)` call, as seen by {@link fakeSharedWorker}. */
 export interface SharedWorkerConstruction {
   url: string | URL;

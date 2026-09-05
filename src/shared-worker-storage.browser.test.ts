@@ -273,4 +273,13 @@ describe("a worker hosted at an explicit workerUrl", () => {
     await expect(second.getItem(key)).resolves.toBe("only behind the second URL");
     await expect(first.getItem(key)).resolves.toBe("only behind the first URL");
   });
+
+  it("refuses a URL on another origin", () => {
+    // Against the page's real origin, which is the comparison the browser
+    // itself would make: it answers a cross-origin worker script with a
+    // SecurityError, so there is nothing here to degrade into.
+    expect(() => open({ workerUrl: "https://cdn.example.test/cache.worker.js" })).toThrow(
+      TypeError,
+    );
+  });
 });

@@ -30,7 +30,8 @@ export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptio
   /**
    * Load the worker from a URL you host yourself, instead of the
    * `cache.worker.js` published beside this bundle. Only needed when your build
-   * can't copy that asset out of `node_modules`. See
+   * can't copy that asset out of `node_modules`. Must be on the page's own
+   * origin; one that resolves elsewhere throws a `TypeError`. See
    * {@link createSharedWorkerStorage}'s `workerUrl`.
    */
   workerUrl?: string | URL | undefined;
