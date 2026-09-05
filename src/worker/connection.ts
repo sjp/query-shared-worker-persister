@@ -85,8 +85,10 @@ export function respond(
 /**
  * Wire a freshly connected port to the shared store: every incoming message is
  * validated and, if it is a well-formed request, answered via {@link respond}.
- * A no-op when the port is absent (a connect event always carries its port; this
- * guards the types).
+ * A no-op when the port is absent: a connect event always carries one in
+ * practice, but the caller reaches it through `event.ports[0]`, which under
+ * `noUncheckedIndexedAccess` is `MessagePort | undefined`, so the absence has to
+ * be handled somewhere and here is the one place that has a port to wire.
  *
  * A message that isn't a well-formed request still gets an `ok: false` reply
  * whenever it carries a usable `id`, so the sender fails immediately instead of

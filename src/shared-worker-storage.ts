@@ -6,6 +6,16 @@ import type {
   StorageResult,
 } from "./worker/protocol";
 
+/** Prefixes console output so a line is traceable to this package. */
+const PACKAGE_NAME = "@sjpnz/query-shared-worker-persister";
+
+/**
+ * Base SharedWorker name; a `namespace` is appended to it. The name and the
+ * worker's script URL together identify the worker, so tabs share a store only
+ * when both match.
+ */
+const WORKER_NAME = "TANSTACK_QUERY_SHARED_CACHE_WORKER";
+
 /** Which kind of failure a {@link SharedWorkerStorageError} describes. */
 export type SharedWorkerStorageErrorCode =
   | "unsupported"
@@ -179,9 +189,6 @@ export interface CreateSharedWorkerStorageOptions {
   onError?: ((error: SharedWorkerStorageError) => void) | undefined;
 }
 
-/** `Omit` that distributes over a union, preserving per-variant fields like `value`. */
-type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
-
 /** A request awaiting its matching response, plus the timer that will reject it. */
 interface Pending {
   /** The operation asked for; fixes which result shape the response may carry. */
@@ -351,7 +358,14 @@ export function createSharedWorkerStorage(
   };
   port.start?.();
 
-  function request(message: DistributiveOmit<StorageRequest, "id">): Promise<StorageResult> {
+  /**
+   * Post one request and resolve with its response. The caller supplies a
+   * builder rather than a finished message because the `id` is allocated here:
+   * handing the builder the id lets it construct a whole {@link StorageRequest}
+   * in one go, so the message is type checked against the operation it names
+   * instead of being assembled from a partial and cast back.
+   */
+  function request(build: (id: number) => StorageRequest): Promise<StorageResult> {
     // Once the port is closed the browser drops `postMessage` silently, so a
     // request issued here would sit in `pending` and only fail at the timeout —
     // a misleading error, ten seconds late, holding a timer the whole way. Fail
@@ -365,6 +379,7 @@ export function createSharedWorkerStorage(
     if (fatalError) return Promise.reject(fatalError);
 
     const id = nextId++;
+    const message = build(id);
     return new Promise<StorageResult>((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
@@ -376,7 +391,7 @@ export function createSharedWorkerStorage(
         );
       }, timeoutMs);
       pending.set(id, { op: message.op, resolve, reject, timer });
-      port.postMessage({ ...message, id } as StorageRequest);
+      port.postMessage(message);
     });
   }
 
@@ -399,10 +414,10 @@ export function createSharedWorkerStorage(
    * data.
    */
   function read(
-    message: DistributiveOmit<StorageRequest, "id">,
+    build: (id: number) => StorageRequest,
     empty: StorageResult,
   ): Promise<StorageResult> {
-    return request(message).catch((error: unknown) => {
+    return request(build).catch((error: unknown) => {
       // A fatal transport failure is already reported where it happens, once.
       // Everything else — a timeout, a worker-side error, a reply that broke
       // the protocol — is reported here, so a cache that silently stays cold
@@ -446,13 +461,15 @@ export function createSharedWorkerStorage(
   // falls back to the empty value of that same shape.
   const storage: SharedWorkerStorage = {
     mode: "shared-worker",
-    getItem: (key) => read({ kind: "request", op: "getItem", key }, null) as Promise<string | null>,
-    entries: () => read({ kind: "request", op: "entries" }, []) as Promise<StorageEntries>,
+    getItem: (key) =>
+      read((id) => ({ kind: "request", id, op: "getItem", key }), null) as Promise<string | null>,
+    entries: () =>
+      read((id) => ({ kind: "request", id, op: "entries" }), []) as Promise<StorageEntries>,
     setItem: async (key, value) => {
-      await request({ kind: "request", op: "setItem", key, value });
+      await request((id) => ({ kind: "request", id, op: "setItem", key, value }));
     },
     removeItem: async (key) => {
-      await request({ kind: "request", op: "removeItem", key });
+      await request((id) => ({ kind: "request", id, op: "removeItem", key }));
     },
     dispose,
     // The symbol is read when the storage is built rather than when this module
@@ -478,9 +495,6 @@ export function createSharedWorkerStorage(
 
   return storage;
 }
-
-/** Prefixes console output so a line is traceable to this package. */
-const PACKAGE_NAME = "@sjpnz/query-shared-worker-persister";
 
 /**
  * Send a diagnostic to the caller's `onError`, or to the console when there is
@@ -562,13 +576,6 @@ function createNoopStorage(): SharedWorkerStorage {
     [Symbol.dispose]: dispose,
   };
 }
-
-/**
- * Base SharedWorker name; a `namespace` is appended to it. The name and the
- * worker's script URL together identify the worker, so tabs share a store only
- * when both match.
- */
-const WORKER_NAME = "TANSTACK_QUERY_SHARED_CACHE_WORKER";
 
 /**
  * Instantiate the shared `cache.worker.ts` and return its port, or `undefined`

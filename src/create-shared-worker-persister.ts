@@ -78,11 +78,7 @@ export function createSharedWorkerPersister(
 ): SharedWorkerPersister {
   const { timeoutMs, namespace, workerUrl, signal, onError, ...persisterOptions } = options;
   const storage = createSharedWorkerStorage({ timeoutMs, namespace, workerUrl, signal, onError });
-  const persister = createAsyncStoragePersister({
-    throttleTime: 1_000,
-    ...persisterOptions,
-    storage,
-  });
+  const persister = createAsyncStoragePersister({ ...persisterOptions, storage });
   const dispose = () => {
     storage.dispose();
   };

@@ -1,6 +1,7 @@
 import { vi } from "vite-plus/test";
 import type { PortAdapter } from "./shared-worker-storage";
-import type { StorageRequest, StorageResponse } from "./worker/protocol";
+import { respond } from "./worker/connection";
+import type { StorageRequest } from "./worker/protocol";
 import { CacheStore } from "./worker/store";
 
 /**
@@ -11,8 +12,12 @@ import { CacheStore } from "./worker/store";
 /**
  * A fake `MessagePort` that stands in for the SharedWorker connection: it pipes
  * client requests through a real {@link CacheStore} and replies asynchronously,
- * echoing the request `id` — exactly like `cache.worker.ts` does. This lets us
- * test the client-side request/response correlation without a real worker.
+ * echoing the request `id` — exactly like `cache.worker.ts` does.
+ *
+ * The reply is built by the worker's own {@link respond}, so the request ->
+ * response mapping a client test exercises is the one that runs in production,
+ * error envelopes included; only the transport is fake. This lets us test the
+ * client-side request/response correlation without a real worker.
  */
 export function createFakePort(store = new CacheStore()): PortAdapter {
   const port: PortAdapter = {
@@ -20,13 +25,7 @@ export function createFakePort(store = new CacheStore()): PortAdapter {
     postMessage(request: StorageRequest) {
       // Reply on a microtask to mimic the async hop to the worker and back.
       queueMicrotask(() => {
-        let response: StorageResponse;
-        try {
-          response = { kind: "response", id: request.id, ok: true, result: store.handle(request) };
-        } catch (err) {
-          response = { kind: "response", id: request.id, ok: false, error: String(err) };
-        }
-        port.onmessage?.({ data: response } as MessageEvent<StorageResponse>);
+        port.onmessage?.({ data: respond(store, request) } as MessageEvent<unknown>);
       });
     },
   };
