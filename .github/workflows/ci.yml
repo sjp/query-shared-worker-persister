@@ -9,13 +9,25 @@ on:
   pull_request:
     branches: [master]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
 
     strategy:
+      fail-fast: false
       matrix:
         node-version: [24, 26, latest]
+        # `latest` is an early warning about the next Node major, not a merge
+        # gate: its leg reports failures without failing the workflow.
+        include:
+          - node-version: latest
+            experimental: true
+
+    continue-on-error: ${{ matrix.experimental == true }}
 
     steps:
       - uses: actions/checkout@v7
@@ -37,16 +49,7 @@ jobs:
       - run: vp run playwright:install
       - run: vp run check:toolchain
       - run: vp run check
-      # Before the tests, and not only to catch build failures early: the browser
-      # suite loads the package out of `dist/` so that the worker asset and the
-      # URL that finds it are covered too.
       - run: vp run build
-      # The export map and the emitted types are only checkable against a real
-      # tarball, so this runs on the freshly built `dist/`. The profile matches
-      # what the package supports: ESM through a bundler or a modern Node.
       - run: vp run check:package
-      # Type check a stand-in consumer against the built declarations, under a
-      # narrower `lib` than this package's own and with `skipLibCheck: false`, so
-      # a declaration that only compiles for us is caught here.
       - run: vp run check:types-consumer
       - run: vp run test
