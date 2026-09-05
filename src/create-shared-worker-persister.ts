@@ -1,6 +1,10 @@
 import { createAsyncStoragePersister } from "@tanstack/query-async-storage-persister";
 import type { Persister } from "@tanstack/query-persist-client-core";
-import { createSharedWorkerStorage, type SharedWorkerStorageError } from "./shared-worker-storage";
+import {
+  createSharedWorkerStorage,
+  type SharedWorkerStorage,
+  type SharedWorkerStorageError,
+} from "./shared-worker-storage";
 
 /** Options for {@link createAsyncStoragePersister}, minus the `storage` we supply. */
 type AsyncStoragePersisterOptions = Parameters<typeof createAsyncStoragePersister>[0];
@@ -47,10 +51,19 @@ export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptio
 
 /**
  * A TanStack `Persister` that also owns the storage behind it, so the
- * SharedWorker connection it opened can be released without reaching for the
- * storage itself.
+ * SharedWorker connection it opened can be released — and asked whether it
+ * persists anything at all — without reaching for the storage itself.
  */
 export interface SharedWorkerPersister extends Persister {
+  /**
+   * `"shared-worker"` when a transport was established, `"noop"` when one could
+   * not be and nothing this persister saves is kept — the fallback taken when
+   * `SharedWorker` is missing or refuses to be constructed. Fixed for the life
+   * of the persister: a worker that fails *after* construction leaves this
+   * `"shared-worker"`, and is reported through
+   * {@link CreateSharedWorkerPersisterOptions.onError} instead.
+   */
+  readonly mode: SharedWorkerStorage["mode"];
   /**
    * Dispose the underlying storage: settle its in-flight requests and close the
    * port. Idempotent, and independent of any `signal` that was passed. The
@@ -74,7 +87,8 @@ export interface SharedWorkerPersister extends Persister {
  *
  * The storage stays reachable through the returned `dispose()`, for the
  * short-lived persisters — tests, hot reloads, a micro-frontend being unmounted
- * — that have to give the connection back.
+ * — that have to give the connection back, and through `mode`, for code that
+ * wants to know whether anything is being persisted at all.
  */
 export function createSharedWorkerPersister(
   options: CreateSharedWorkerPersisterOptions = {},
@@ -85,5 +99,5 @@ export function createSharedWorkerPersister(
   const dispose = () => {
     storage.dispose();
   };
-  return { ...persister, dispose, [Symbol.dispose]: dispose };
+  return { ...persister, mode: storage.mode, dispose, [Symbol.dispose]: dispose };
 }

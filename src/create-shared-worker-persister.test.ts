@@ -70,6 +70,33 @@ describe("createSharedWorkerPersister", () => {
     }
   });
 
+  it("reports mode `shared-worker` when the worker was constructed", async () => {
+    const { FakeSharedWorker } = fakeSharedWorker();
+    await withSharedWorker(FakeSharedWorker, () => {
+      expect(createSharedWorkerPersister().mode).toBe("shared-worker");
+    });
+  });
+
+  it("reports mode `noop` when SharedWorker is missing, so nothing is persisted", async () => {
+    await withSharedWorker(undefined, () => {
+      const persister = createSharedWorkerPersister({ onError: () => {} });
+      expect(persister.mode).toBe("noop");
+    });
+  });
+
+  it("reports mode `noop` when the SharedWorker constructor refuses", async () => {
+    // An opaque origin exposes the constructor and then rejects the call.
+    class ThrowingSharedWorker {
+      constructor() {
+        throw new DOMException("access denied", "SecurityError");
+      }
+    }
+    await withSharedWorker(ThrowingSharedWorker, () => {
+      const persister = createSharedWorkerPersister({ onError: () => {} });
+      expect(persister.mode).toBe("noop");
+    });
+  });
+
   it("forwards namespace as a dedicated worker name", async () => {
     const { FakeSharedWorker, constructions } = fakeSharedWorker();
     await withSharedWorker(FakeSharedWorker, () => {

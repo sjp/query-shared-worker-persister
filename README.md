@@ -316,14 +316,16 @@ The same errors reach you as the rejection of a failed write, so a `retry` hook 
 
 `onError` is diagnostic only: it never changes how a call settles, and that holds even when your handler throws. A throw from it is caught and written to the console together with the error it was given, and the read, write or worker failure that reported carries on exactly as it would have — a reporter that is itself broken can't turn a read into a rejection or leave a failed worker half-shut-down.
 
-To check synchronously whether persistence is live at all, read `mode` on the storage:
+To check synchronously whether persistence is live at all, read `mode`. Both entry points carry it:
 
 ```typescript
-const storage = createSharedWorkerStorage();
-if (storage.mode === "noop") {
+const persister = createSharedWorkerPersister();
+if (persister.mode === "noop") {
   // SharedWorker is missing or refused: nothing will be persisted or shared.
 }
 ```
+
+`createSharedWorkerStorage` returns a storage with the same `mode`. It is fixed when the persister or storage is built, so it is safe to read once; a worker that fails later stays `"shared-worker"` and reports through `onError` instead.
 
 ## API
 
@@ -348,12 +350,13 @@ Every `createAsyncStoragePersister` option except `storage` is forwarded untouch
 | `signal`       | `AbortSignal`                                                     | —                             | Disposes the underlying storage when aborted.                                                                                                                                                                          |
 | `onError`      | `(error: SharedWorkerStorageError) => void`                       | console                       | Receives the storage's warnings and errors instead of the console; see [Diagnostics](#diagnostics).                                                                                                                    |
 
-Beyond the `Persister` methods, the returned object carries the storage's teardown:
+Beyond the `Persister` methods, the returned object carries the storage's teardown and its mode:
 
-| Member               | Returns | Notes                                                                                                                            |
-| -------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `dispose()`          | `void`  | Disposes the storage this persister created: settles in-flight requests, closes the port. Idempotent; see [Disposal](#disposal). |
-| `[Symbol.dispose]()` | `void`  | The same call under the well-known symbol, so the persister can be declared with `using`.                                        |
+| Member               | Type                        | Notes                                                                                                                            |
+| -------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `dispose()`          | `void`                      | Disposes the storage this persister created: settles in-flight requests, closes the port. Idempotent; see [Disposal](#disposal). |
+| `[Symbol.dispose]()` | `void`                      | The same call under the well-known symbol, so the persister can be declared with `using`.                                        |
+| `mode`               | `"shared-worker" \| "noop"` | Whether a transport was established at all. `"noop"` means nothing is persisted; see [Diagnostics](#diagnostics).                |
 
 ### `createSharedWorkerStorage(options?)`
 

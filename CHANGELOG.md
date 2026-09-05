@@ -27,7 +27,8 @@ history, so they summarise the visible behaviour rather than every change.
 - `SharedWorkerStorageError`, the error every failure is now raised and reported as, carrying a
   `code` of `"unsupported"`, `"transport"`, `"timeout"`, `"protocol"` or `"disposed"` so
   callers can branch on the cause without matching on message text.
-- `mode` on `SharedWorkerStorage`, `"shared-worker"` or `"noop"`, so degrading to the no-op
+- `mode` on `SharedWorkerStorage` and on the persister returned by
+  `createSharedWorkerPersister`, `"shared-worker"` or `"noop"`, so degrading to the no-op
   fallback is something code can see rather than only a console warning.
 - `PortAdapter` is exported, so the object the `port` option accepts can now be named. The
   protocol types it is written in terms of (`StorageRequest`, `StorageResponse`,
