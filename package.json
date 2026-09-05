@@ -52,7 +52,7 @@
     "build": "tsc && tsc -p src/worker && vp pack",
     "check": "vp check",
     "check:fix": "vp check --fix",
-    "check:package": "publint && attw --pack . --profile esm-only",
+    "check:package": "node scripts/check-worker-bundle.mjs && publint && attw --pack . --profile esm-only",
     "check:toolchain": "node scripts/check-vite-override.mjs",
     "check:types-consumer": "tsc -p scripts/check-types-consumer",
     "lint": "vp lint",

@@ -51,10 +51,12 @@ User-facing behaviour — what the options mean, what consumers have to do — l
   path, is what the output file is called; listed by path it would land in `dist/worker/`.
 - **`dist/cache.worker.js` imports nothing.** That one file is all a consumer's bundler copies
   out of the package, so anything left beside it does not travel with it. `vp pack` builds both
-  entries together and emits a module they both import as a shared chunk, which is why the
-  worker side keeps its own copy of what it would otherwise share with the client half — the
-  log prefix in `src/worker/connection.ts` — instead of importing it. After a change to the
-  worker's imports, check that `dist/cache.worker.js` still has no `import` statement.
+  entries together, and a module they both import may be emitted as a shared chunk the two of
+  them load — whether it is depends on what survives tree-shaking, so it is not something a
+  rule of thumb can settle. That is why the worker side keeps its own copy of what it would
+  otherwise share with the client half — the log prefix in `src/worker/connection.ts` — instead
+  of importing it. `npm run check:package` proves it, by reading the emitted worker and failing
+  on any reference to another module; nothing has to be inspected by hand.
 - **One store per worker process.** `cache.worker.ts` constructs a single `CacheStore` and every
   connection shares it; that, plus the browser terminating the worker when the last tab closes,
   is the entire lifetime model. There is no persistence to disk and no cleanup to write.
@@ -100,9 +102,13 @@ under the nearest `tsconfig.json`, so it picks up `src/worker/tsconfig.json` for
 by itself; plain `tsc` reads only the config it is given, which is why `build` names the worker
 project as well. Adding another config under `src/` means adding another `tsc -p` alongside it.
 
-`npm run check:package` inspects what will actually be published: `publint` for manifest and
-file-layout mistakes, `attw` for entry points whose types and runtime code disagree. Both work
-off a real `npm pack` tarball, so run `build` first. `attw` runs under its `esm-only` profile
+`npm run check:package` inspects what will actually be published, in three steps.
+`scripts/check-worker-bundle.mjs` reads `dist/cache.worker.js` and fails on a static or dynamic
+`import`, a re-export or a `require`, naming the line, which is what holds the "the worker
+imports nothing" invariant up. It comes first because it is the cheap one and the one whose
+failure a change to the worker's imports is most likely to cause. Then `publint` for manifest
+and file-layout mistakes, and `attw` for entry points whose types and runtime code disagree.
+All three read build output — the last two off a real `npm pack` tarball — so run `build` first. `attw` runs under its `esm-only` profile
 because the package ships ESM only and expects a bundler, so its CommonJS and Node 10
 resolution complaints are reported but do not fail the run. CI runs this after `build`.
 
