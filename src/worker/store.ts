@@ -26,20 +26,28 @@ export class CacheStore {
   }
 
   /**
-   * Every key/value pair currently held, as a snapshot array. Copied out of the
-   * Map rather than exposing its iterator so the result survives the structured
-   * clone back to the client, and so later writes can't mutate what a caller is
-   * still reading. Feeds per-query persistence, which iterates the store to find
-   * the entries under its key prefix.
+   * The key/value pairs currently held, as a snapshot array — every one of them,
+   * or only those whose key starts with `prefix`. Copied out of the Map rather
+   * than exposing its iterator so the result survives the structured clone back
+   * to the client, and so later writes can't mutate what a caller is still
+   * reading.
+   *
+   * The filter is here, in the worker, because this feeds per-query
+   * persistence: it iterates the store to find the entries under its own key
+   * prefix, and one store is shared by every tab and every application on this
+   * worker. Narrowing before the reply is what keeps a caller from being handed
+   * — and paying the clone cost of — the entries it is about to discard.
    */
-  entries(): StorageEntries {
-    return Array.from(this.map.entries());
+  entries(prefix?: string): StorageEntries {
+    const pairs = Array.from(this.map.entries());
+    return prefix === undefined ? pairs : pairs.filter(([key]) => key.startsWith(prefix));
   }
 
   /**
    * Apply a decoded {@link StorageRequest} and return the result value.
    * `setItem`/`removeItem` resolve to `null`; `getItem` returns the stored
-   * string or `null` when absent; `entries` returns every pair. Kept here
+   * string or `null` when absent; `entries` returns the pairs under its
+   * `prefix`, or every pair when it carries none. Kept here
    * (rather than in the worker) so the request -> result mapping is covered by
    * unit tests.
    *
@@ -58,7 +66,7 @@ export class CacheStore {
         this.removeItem(request.key);
         return null;
       case "entries":
-        return this.entries();
+        return this.entries(request.prefix);
       default: {
         // `request` is `never` here, so read the operation back off the
         // unnarrowed value to name it in the error.

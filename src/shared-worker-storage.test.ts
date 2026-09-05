@@ -933,6 +933,141 @@ describe("when the port refuses the message", () => {
   });
 });
 
+describe("the entriesPrefix option", () => {
+  /** A fake port that also records every request the client posted through it. */
+  function recordingPort(store = new CacheStore()) {
+    const answering = createFakePort(store);
+    const sent: StorageRequest[] = [];
+    const port: PortAdapter = {
+      onmessage: null,
+      postMessage: (request) => {
+        sent.push(request);
+        answering.postMessage(request);
+      },
+    };
+    answering.onmessage = (event) => port.onmessage?.(event);
+    return { port, sent, store };
+  }
+
+  /** A store holding one app's entries alongside another's. */
+  function sharedStore() {
+    const store = new CacheStore();
+    store.setItem("APP-a", "1");
+    store.setItem("OTHER-b", "2");
+    store.setItem("APP-c", "3");
+    return store;
+  }
+
+  it("asks the worker for only the entries under the prefix", async () => {
+    const { port, sent } = recordingPort(sharedStore());
+    const storage = createSharedWorkerStorage({ port, entriesPrefix: "APP-" });
+
+    await expect(storage.entries()).resolves.toEqual([
+      ["APP-a", "1"],
+      ["APP-c", "3"],
+    ]);
+    expect(sent).toEqual([
+      { kind: "request", version: PROTOCOL_VERSION, id: 1, op: "entries", prefix: "APP-" },
+    ]);
+
+    storage.dispose();
+  });
+
+  it("leaves the other operations addressing the whole store", async () => {
+    const { port } = recordingPort(sharedStore());
+    const storage = createSharedWorkerStorage({ port, entriesPrefix: "APP-" });
+
+    await expect(storage.getItem("OTHER-b")).resolves.toBe("2");
+    await storage.removeItem("OTHER-b");
+    await expect(storage.getItem("OTHER-b")).resolves.toBeNull();
+
+    storage.dispose();
+  });
+
+  it("returns the whole store, and asks for it, when the option is absent", async () => {
+    const { port, sent } = recordingPort(sharedStore());
+    const storage = createSharedWorkerStorage({ port });
+
+    await expect(storage.entries()).resolves.toEqual([
+      ["APP-a", "1"],
+      ["OTHER-b", "2"],
+      ["APP-c", "3"],
+    ]);
+    expect(sent[0]).toMatchObject({ op: "entries", prefix: undefined });
+
+    storage.dispose();
+  });
+
+  it("filters the reply itself, so a worker that ignores the prefix still narrows", async () => {
+    // The worker runs whichever build the first tab to connect loaded, so it may
+    // predate the field and answer with the whole store; a build that predates
+    // it names no protocol version either.
+    const port: PortAdapter = {
+      onmessage: null,
+      postMessage(request: StorageRequest) {
+        queueMicrotask(() => {
+          port.onmessage?.({
+            data: {
+              kind: "response",
+              id: request.id,
+              ok: true,
+              result: [
+                ["APP-a", "1"],
+                ["OTHER-b", "2"],
+              ],
+            },
+          } as MessageEvent<StorageResponse>);
+        });
+      },
+    };
+    const storage = createSharedWorkerStorage({ port, entriesPrefix: "APP-" });
+
+    await expect(storage.entries()).resolves.toEqual([["APP-a", "1"]]);
+
+    storage.dispose();
+  });
+
+  it("resolves empty, not unfiltered, when the read fails", async () => {
+    const storage = createSharedWorkerStorage({
+      port: createErrorPort(),
+      entriesPrefix: "APP-",
+      onError: () => {},
+    });
+
+    await expect(storage.entries()).resolves.toEqual([]);
+
+    storage.dispose();
+  });
+
+  it("keeps a per-query persister off another app's entries on the same worker", async () => {
+    const store = new CacheStore();
+    const other = createSharedWorkerStorage({ port: createFakePort(store) });
+    await other.setItem("OTHER-tanstack-query-x", "not ours");
+
+    const storage = createSharedWorkerStorage({
+      port: createFakePort(store),
+      entriesPrefix: "MY_APP-",
+    });
+    const persister = experimental_createQueryPersister({ storage, prefix: "MY_APP" });
+
+    const source = new QueryClient();
+    source.setQueryData(["user", 1], { name: "Ada" });
+    for (const query of source.getQueryCache().getAll()) await persister.persistQuery(query);
+
+    await expect(storage.entries()).resolves.toEqual([
+      [expect.stringMatching(/^MY_APP-/) as unknown as string, expect.any(String)],
+    ]);
+
+    const restored = new QueryClient();
+    await persister.restoreQueries(restored);
+    expect(restored.getQueryData(["user", 1])).toEqual({ name: "Ada" });
+    expect(await other.getItem("OTHER-tanstack-query-x")).toBe("not ours");
+
+    storage.dispose();
+    other.dispose();
+  });
+});
+
 describe("per-query persistence", () => {
   /**
    * `experimental_createQueryPersister` stores one key per query hash and needs

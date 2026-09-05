@@ -46,6 +46,19 @@ describe("respond", () => {
     });
   });
 
+  it("answers an entries request carrying a prefix with only the pairs under it", () => {
+    const store = new CacheStore();
+    store.setItem("APP-a", "1");
+    store.setItem("OTHER-b", "2");
+    expect(respond(store, { kind: "request", id: 9, op: "entries", prefix: "APP-" })).toEqual({
+      kind: "response",
+      version: PROTOCOL_VERSION,
+      id: 9,
+      ok: true,
+      result: [["APP-a", "1"]],
+    });
+  });
+
   it("wraps a thrown Error as an ok:false response carrying its message", () => {
     const store = {
       handle: () => {
@@ -184,6 +197,7 @@ describe("handleConnect", () => {
       ["a cyclic op", { kind: "request", id: 5, op: cyclic(), key: "k" }],
       ["a function op", { kind: "request", id: 5, op: () => "getItem", key: "k" }],
       ["a cyclic key", { kind: "request", id: 5, op: "getItem", key: cyclic() }],
+      ["a non-string entries prefix", { kind: "request", id: 5, op: "entries", prefix: 42 }],
     ])("replies ok:false for %s carrying an id", (_label, data) => {
       const { sent, deliver } = connect();
       deliver(data);
@@ -194,6 +208,29 @@ describe("handleConnect", () => {
         id: 5,
         ok: false,
       });
+    });
+
+    it("names the bad entries prefix in the error it replies with", () => {
+      const { sent, deliver } = connect();
+      deliver({ kind: "request", id: 5, op: "entries", prefix: 42 });
+      expect(sent).toEqual([
+        {
+          kind: "response",
+          version: PROTOCOL_VERSION,
+          id: 5,
+          ok: false,
+          error: "Malformed request: entries prefix must be a string, received number",
+        },
+      ]);
+    });
+
+    it("serves an entries request whose prefix is absent, as an older client sends it", () => {
+      const { sent, store, deliver } = connect();
+      store.setItem("k", "v");
+      deliver({ kind: "request", id: 5, op: "entries" });
+      expect(sent).toEqual([
+        { kind: "response", version: PROTOCOL_VERSION, id: 5, ok: true, result: [["k", "v"]] },
+      ]);
     });
 
     it("does not let a malformed request touch the store", () => {

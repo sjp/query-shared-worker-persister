@@ -29,7 +29,9 @@
  * a field whose meaning changed, one that is now required, or a response shape
  * an older client would accept and misinterpret. Adding an operation does not
  * qualify: an older worker already answers one it doesn't know with an error,
- * and an older client never sends it.
+ * and an older client never sends it. Nor does an optional field a peer that
+ * doesn't know it can ignore and still answer correctly, as `entries`' `prefix`
+ * does — the client narrows the reply by the same prefix either way.
  */
 export const PROTOCOL_VERSION = 1;
 
@@ -50,13 +52,13 @@ interface Versioned {
   version?: number | undefined;
 }
 
-/** Every key/value pair in the store, as returned by an `entries` request. */
+/** The key/value pairs an `entries` request answered with. */
 export type StorageEntries = Array<[key: string, value: string]>;
 
 /**
  * What a successful response carries. Which of the two shapes it is follows from
  * the request's `op` — reads and writes answer with `string | null`, `entries`
- * with the whole store — so the client checks the result against the operation
+ * with a list of pairs — so the client checks the result against the operation
  * it asked for rather than guessing from the value alone.
  */
 export type StorageResult = string | null | StorageEntries;
@@ -67,7 +69,7 @@ export type StorageRequest = Versioned &
     | { kind: "request"; id: number; op: "getItem"; key: string }
     | { kind: "request"; id: number; op: "setItem"; key: string; value: string }
     | { kind: "request"; id: number; op: "removeItem"; key: string }
-    | { kind: "request"; id: number; op: "entries" }
+    | { kind: "request"; id: number; op: "entries"; prefix?: string | undefined }
   );
 
 /** Worker -> client: the result of a single request, keyed by `id`. */

@@ -66,6 +66,40 @@ describe("CacheStore", () => {
       store.setItem("b", "2");
       expect(snapshot).toEqual([["a", "1"]]);
     });
+
+    it("returns only the pairs under a prefix when one is given", () => {
+      const store = new CacheStore();
+      store.setItem("APP-a", "1");
+      store.setItem("OTHER-b", "2");
+      store.setItem("APP-c", "3");
+      expect(store.entries("APP-")).toEqual([
+        ["APP-a", "1"],
+        ["APP-c", "3"],
+      ]);
+    });
+
+    it("matches on the whole prefix rather than anywhere in the key", () => {
+      const store = new CacheStore();
+      store.setItem("prefixed", "1");
+      store.setItem("un-prefixed", "2");
+      expect(store.entries("prefix")).toEqual([["prefixed", "1"]]);
+    });
+
+    it("is empty when nothing matches the prefix", () => {
+      const store = new CacheStore();
+      store.setItem("a", "1");
+      expect(store.entries("APP-")).toEqual([]);
+    });
+
+    it("returns everything for an empty prefix, as every key starts with one", () => {
+      const store = new CacheStore();
+      store.setItem("a", "1");
+      store.setItem("b", "2");
+      expect(store.entries("")).toEqual([
+        ["a", "1"],
+        ["b", "2"],
+      ]);
+    });
   });
 
   describe("handle()", () => {
@@ -97,6 +131,15 @@ describe("CacheStore", () => {
       expect(store.handle({ kind: "request", id: 1, op: "entries" })).toEqual([
         ["a", "1"],
         ["b", "2"],
+      ]);
+    });
+
+    it("maps an entries request carrying a prefix to the pairs under it", () => {
+      const store = new CacheStore();
+      store.setItem("APP-a", "1");
+      store.setItem("OTHER-b", "2");
+      expect(store.handle({ kind: "request", id: 1, op: "entries", prefix: "APP-" })).toEqual([
+        ["APP-a", "1"],
       ]);
     });
 

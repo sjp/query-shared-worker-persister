@@ -90,7 +90,9 @@ export interface PortAdapter {
 export interface SharedWorkerStorage extends AsyncStorage {
   /**
    * Every key/value pair in the shared store, including any written by other
-   * apps sharing the same worker. Always present here (TanStack declares it
+   * apps sharing the same worker — or, with
+   * {@link CreateSharedWorkerStorageOptions.entriesPrefix} set, only the pairs
+   * whose key starts with it. Always present here (TanStack declares it
    * optional), so this storage can drive `experimental_createQueryPersister`,
    * which needs to iterate the store for `restoreQueries`, `persisterGc` and
    * `removeQueries`.
@@ -164,6 +166,24 @@ export interface CreateSharedWorkerStorageOptions {
    * `localStorage`. Don't store values here you wouldn't put in `localStorage`.
    */
   namespace?: string | undefined;
+  /**
+   * Return only the entries whose key starts with this string from `entries()`,
+   * instead of everything in the shared store.
+   *
+   * Worth setting wherever `entries()` is actually used, which in practice
+   * means TanStack's per-query persister: it reads the whole store on
+   * `restoreQueries`, on every garbage-collection pass and on `removeQueries`,
+   * then keeps only the keys under its own `prefix`. One worker's store holds
+   * every tab's entries, and every entry of any other app sharing that worker,
+   * so without this each of those reads copies all of it across the port to
+   * discard most of it. Pass the persister's `prefix` followed by the `-` it
+   * joins keys with, and only the matching pairs make the trip.
+   *
+   * This narrows what is transferred, not what is reachable: `getItem` and
+   * `setItem` still address the whole store, and any same-origin script can
+   * read every entry in the worker regardless.
+   */
+  entriesPrefix?: string | undefined;
   /**
    * Load the worker from this URL instead of the `dist/cache.worker.js` that
    * ships beside the bundle. The default reference is written as
@@ -629,8 +649,21 @@ export function createSharedWorkerStorage(
     mode: "shared-worker",
     getItem: (key) =>
       read((id) => ({ kind: "request", id, op: "getItem", key }), null) as Promise<string | null>,
-    entries: () =>
-      read((id) => ({ kind: "request", id, op: "entries" }), []) as Promise<StorageEntries>,
+    entries: async () => {
+      const { entriesPrefix } = options;
+      const pairs = (await read(
+        (id) => ({ kind: "request", id, op: "entries", prefix: entriesPrefix }),
+        [],
+      )) as StorageEntries;
+      // Filtered again here because the worker may be an older build than this
+      // tab — it runs whichever script the first tab to connect loaded — and one
+      // that predates `prefix` answers with the whole store. Repeating the test
+      // costs a pass over a list this tab was going to walk anyway, and makes
+      // the result the same either way.
+      return entriesPrefix === undefined
+        ? pairs
+        : pairs.filter(([key]) => key.startsWith(entriesPrefix));
+    },
     setItem: async (key, value) => {
       await request((id) => ({ kind: "request", id, op: "setItem", key, value }));
     },

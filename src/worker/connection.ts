@@ -71,9 +71,15 @@ function describeInvalidRequest(data: unknown): string | undefined {
   if (!OPERATIONS.has(message.op as StorageRequest["op"])) {
     return `unknown operation ${describeValue(message.op)}`;
   }
-  // `entries` addresses the whole store, so it is the one operation with no key
-  // to check; requiring one would reject a well-formed request.
-  if (message.op === "entries") return undefined;
+  // `entries` addresses the store as a whole, so it is the one operation with no
+  // key to check; requiring one would reject a well-formed request. Its optional
+  // `prefix` narrows which pairs come back, and is absent on every request from
+  // a client older than the field.
+  if (message.op === "entries") {
+    return message.prefix === undefined || typeof message.prefix === "string"
+      ? undefined
+      : `entries prefix must be a string, received ${typeof message.prefix}`;
+  }
   if (typeof message.key !== "string")
     return `key must be a string, received ${typeof message.key}`;
   if (message.op === "setItem" && typeof message.value !== "string") {

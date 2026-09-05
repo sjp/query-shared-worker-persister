@@ -14,6 +14,12 @@ history, so they summarise the visible behaviour rather than every change.
 
 - `entries()` on `SharedWorkerStorage`, returning every key/value pair in the shared store, so
   the storage can drive TanStack's per-query persister (`experimental_createQueryPersister`).
+- `entriesPrefix` on `createSharedWorkerStorage`, which narrows `entries()` to the keys starting
+  with it. TanStack's per-query persister reads the whole store on `restoreQueries`, on each
+  garbage-collection pass and on `removeQueries`, then keeps only the keys under its own
+  `prefix`; setting this to that prefix keeps every other tab's and every other app's entries
+  from being copied across the port only to be discarded. Older workers, which ignore the field,
+  still produce the same result: the reply is filtered on arrival as well.
 - `timeoutMs` on `createSharedWorkerPersister`, which previously could not configure the
   request timeout that `createSharedWorkerStorage` accepts.
 - `workerUrl` on both `createSharedWorkerStorage` and `createSharedWorkerPersister`, for builds

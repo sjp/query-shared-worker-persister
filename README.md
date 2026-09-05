@@ -167,7 +167,10 @@ import { QueryClient } from "@tanstack/react-query";
 import { experimental_createQueryPersister } from "@tanstack/query-persist-client-core";
 import { createSharedWorkerStorage } from "@sjpnz/query-shared-worker-persister";
 
-const storage = createSharedWorkerStorage();
+const storage = createSharedWorkerStorage({
+  // Have the worker send back only this app's entries; see below.
+  entriesPrefix: "MY_AWESOME_APP-",
+});
 
 export const queryPersister = experimental_createQueryPersister({
   storage,
@@ -181,6 +184,8 @@ export const queryClient = new QueryClient({
   defaultOptions: { queries: { persister: queryPersister.persisterFn } },
 });
 ```
+
+`entriesPrefix` is worth pairing with `prefix` here, and this is the only place it matters. The per-query persister reads the entire store — on `restoreQueries`, on every garbage-collection pass and on `removeQueries` — and then keeps only the keys under its own `prefix`, which it joins to each query hash with a `-`. One worker's store holds every tab's entries, and every entry of any other app sharing that worker, so without `entriesPrefix` each of those reads copies all of it across the port to throw most of it away. Set it to the persister's `prefix` plus that `-` and the worker sends back only the matching pairs. It narrows what is transferred, not what is reachable: `getItem` and `setItem` still address the whole store, and any same-origin script can read all of it regardless (see [Security considerations](#security-considerations)).
 
 `persisterFn` only restores a query when that query is actually used, so it fills the cache lazily. To have the shared cache present from the first render — the point of sharing it across tabs — restore everything up front and await it before rendering:
 
@@ -382,26 +387,27 @@ Beyond the `Persister` methods, the returned object carries the storage's teardo
 
 Returns a `SharedWorkerStorage`: an `AsyncStorage` the shared worker backs, usable anywhere TanStack takes a storage.
 
-| Option      | Type                                        | Default | Purpose                                                                                                                                                                                                           |
-| ----------- | ------------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `timeoutMs` | `number`                                    | `10000` | Give up on a pending request after this many milliseconds. Greater than `0` and at most `2147483647`, or `Infinity` for no timeout; anything else throws a `RangeError`. See [Request timeout](#request-timeout). |
-| `namespace` | `string`                                    | —       | Appended to the worker's name, so apps shipping the same worker asset get a worker each.                                                                                                                          |
-| `workerUrl` | `string \| URL`                             | —       | The worker's script URL, replacing the packaged `cache.worker.js`; see [Bundler requirements](#bundler-requirements).                                                                                             |
-| `signal`    | `AbortSignal`                               | —       | Calls `dispose()` when aborted; a signal that has already aborted skips construction entirely and yields a disposed storage.                                                                                      |
-| `port`      | `PortAdapter`                               | —       | Carry the protocol over a port you supply instead of constructing a worker; see [Supplying your own port](#supplying-your-own-port).                                                                              |
-| `onError`   | `(error: SharedWorkerStorageError) => void` | console | Receives every warning and error instead of the console; see [Diagnostics](#diagnostics).                                                                                                                         |
+| Option          | Type                                        | Default | Purpose                                                                                                                                                                                                           |
+| --------------- | ------------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `timeoutMs`     | `number`                                    | `10000` | Give up on a pending request after this many milliseconds. Greater than `0` and at most `2147483647`, or `Infinity` for no timeout; anything else throws a `RangeError`. See [Request timeout](#request-timeout). |
+| `namespace`     | `string`                                    | —       | Appended to the worker's name, so apps shipping the same worker asset get a worker each.                                                                                                                          |
+| `entriesPrefix` | `string`                                    | —       | Return only the entries whose key starts with this from `entries()`, instead of the whole shared store; see [Per-query persistence](#per-query-persistence).                                                      |
+| `workerUrl`     | `string \| URL`                             | —       | The worker's script URL, replacing the packaged `cache.worker.js`; see [Bundler requirements](#bundler-requirements).                                                                                             |
+| `signal`        | `AbortSignal`                               | —       | Calls `dispose()` when aborted; a signal that has already aborted skips construction entirely and yields a disposed storage.                                                                                      |
+| `port`          | `PortAdapter`                               | —       | Carry the protocol over a port you supply instead of constructing a worker; see [Supplying your own port](#supplying-your-own-port).                                                                              |
+| `onError`       | `(error: SharedWorkerStorageError) => void` | console | Receives every warning and error instead of the console; see [Diagnostics](#diagnostics).                                                                                                                         |
 
 The returned object:
 
-| Member                | Returns                            | Notes                                                                                                                                                            |
-| --------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `getItem(key)`        | `Promise<string \| null>`          | `null` when the key is absent, and also when the read fails; see [When a read fails](#when-a-read-fails).                                                        |
-| `setItem(key, value)` | `Promise<void>`                    | Replaces any existing value outright; see [How sharing works](#how-sharing-works).                                                                               |
-| `removeItem(key)`     | `Promise<void>`                    | Removes the entry for every connected tab.                                                                                                                       |
-| `entries()`           | `Promise<Array<[string, string]>>` | Every pair in the store, including entries written by other apps on the same worker. Required by `experimental_createQueryPersister`. Empty when the read fails. |
-| `dispose()`           | `void`                             | Settles in-flight requests and closes the port. Idempotent; afterwards writes reject at once and reads resolve empty.                                            |
-| `[Symbol.dispose]()`  | `void`                             | The same teardown as `dispose()`, so the storage can be declared with `using`; see [Disposal](#disposal).                                                        |
-| `mode`                | `"shared-worker" \| "noop"`        | Whether a transport was established at all. `"noop"` means nothing is persisted; see [Diagnostics](#diagnostics).                                                |
+| Member                | Returns                            | Notes                                                                                                                                                                                                 |
+| --------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `getItem(key)`        | `Promise<string \| null>`          | `null` when the key is absent, and also when the read fails; see [When a read fails](#when-a-read-fails).                                                                                             |
+| `setItem(key, value)` | `Promise<void>`                    | Replaces any existing value outright; see [How sharing works](#how-sharing-works).                                                                                                                    |
+| `removeItem(key)`     | `Promise<void>`                    | Removes the entry for every connected tab.                                                                                                                                                            |
+| `entries()`           | `Promise<Array<[string, string]>>` | Every pair in the store, including entries written by other apps on the same worker, or only those under `entriesPrefix`. Required by `experimental_createQueryPersister`. Empty when the read fails. |
+| `dispose()`           | `void`                             | Settles in-flight requests and closes the port. Idempotent; afterwards writes reject at once and reads resolve empty.                                                                                 |
+| `[Symbol.dispose]()`  | `void`                             | The same teardown as `dispose()`, so the storage can be declared with `using`; see [Disposal](#disposal).                                                                                             |
+| `mode`                | `"shared-worker" \| "noop"`        | Whether a transport was established at all. `"noop"` means nothing is persisted; see [Diagnostics](#diagnostics).                                                                                     |
 
 A write rejects with a `SharedWorkerStorageError` if the worker doesn't answer within `timeoutMs`, and rejects immediately once the storage is disposed or the worker has failed; a read resolves empty in all three cases. When `SharedWorker` is missing or refuses to be constructed you get the same shape backed by no-op storage — reads resolve empty and writes are dropped; see [Browser Support](#browser-support).
 
