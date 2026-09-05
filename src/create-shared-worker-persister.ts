@@ -12,8 +12,10 @@ export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptio
    */
   timeoutMs?: number;
   /**
-   * Isolate this app's cache in its own SharedWorker process instead of sharing
-   * the per-origin default. See {@link createSharedWorkerStorage}'s `namespace`.
+   * Give this app its own SharedWorker, and its own store, instead of sharing
+   * one with other apps that serve the same worker asset. Not an access
+   * boundary — any same-origin script can open the same worker. See
+   * {@link createSharedWorkerStorage}'s `namespace`.
    */
   namespace?: string;
   /**

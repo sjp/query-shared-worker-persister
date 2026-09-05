@@ -38,11 +38,16 @@ export interface CreateSharedWorkerStorageOptions {
   /** Reject a pending request after this many ms. Default 10s. */
   timeoutMs?: number;
   /**
-   * Isolate this app's cache in its own SharedWorker process. SharedWorkers are
-   * keyed by `(scriptURL, name)`, so every app on an origin otherwise shares one
-   * worker — and any same-origin context can read the whole store. Pass a unique
-   * `namespace` to get a dedicated worker (and a dedicated `CacheStore`) instead.
-   * Omit it to keep the shared default.
+   * Give this app its own SharedWorker, and its own `CacheStore`, by changing
+   * the worker's name. A SharedWorker is identified by `(scriptURL, name)`, and
+   * the script URL is the worker asset the page loads, so separately built apps
+   * on one origin usually serve that asset from different URLs and get separate
+   * workers already. A `namespace` is what keeps apps shipping the *same* worker
+   * file — a shell and its micro-frontends, say — out of each other's store.
+   *
+   * It is not an access boundary: any same-origin script can open that worker
+   * under the same name and read every entry in it, just as it could read
+   * `localStorage`. Don't store values here you wouldn't put in `localStorage`.
    */
   namespace?: string;
   /**
@@ -320,7 +325,11 @@ function createNoopStorage(): SharedWorkerStorage {
   };
 }
 
-/** Base SharedWorker name; a `namespace` is appended to isolate per app. */
+/**
+ * Base SharedWorker name; a `namespace` is appended to it. The name and the
+ * worker's script URL together identify the worker, so tabs share a store only
+ * when both match.
+ */
 const WORKER_NAME = "TANSTACK_QUERY_SHARED_CACHE_WORKER";
 
 /**
@@ -351,6 +360,11 @@ function connectSharedWorker(
   // that sibling file into its output, keeping it same-origin. That same-origin
   // requirement is what lets the SharedWorker actually be shared across tabs (a
   // cross-origin copy would silently break sharing).
+  //
+  // This URL is also half of the worker's identity, the other half being `name`,
+  // so tabs share a worker only while they load the asset from the same URL. A
+  // deployment that changes it — a content hash, typically — gives new tabs a
+  // fresh, empty worker while already-open tabs keep talking to the old one.
   let worker: SharedWorker;
   try {
     worker = new SharedWorker(new URL("./cache.worker.js", import.meta.url), {

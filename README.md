@@ -130,7 +130,7 @@ const storage = createSharedWorkerStorage();
 export const queryPersister = experimental_createQueryPersister({
   storage,
   // Every key this persister writes starts with `prefix`; give each app its own
-  // so apps sharing the default worker don't restore each other's queries.
+  // so apps sharing a worker don't restore each other's queries.
   prefix: "MY_AWESOME_APP",
   maxAge: 1000 * 60 * 60, // discard anything older on restore
 });
@@ -157,9 +157,19 @@ The worker holds one in-memory store, shared by every tab connected to it. What 
 - **A restore that doesn't produce a usable cache clears the entry for everyone.** `persistQueryClient` calls `removeClient()` when the `buster` doesn't match, when `maxAge` has elapsed, or when restoring throws — a request timeout included. Because the store is shared, one tab making that call empties the entry every other tab is using.
 - **Access tokens are no exception.** Sharing a token across tabs is the headline use case, and it is subject to the same overwrites and clears as any other query: a tab whose own cache no longer holds the token will persist a value without it.
 
-During a rolling deployment, tabs on the old and new versions are connected to the same worker. Keep `buster` stable across versions whose cached shapes are compatible, so an older tab doesn't wipe an entry the newer ones just filled — or accept the wipe and let the next writer refill it.
+Whether a deployment carries the cache across depends on the worker asset's URL, because that URL is part of the worker's identity (see [Which tabs share a worker](#which-tabs-share-a-worker)). If a deployment changes it — a content hash, typically — tabs opened afterwards connect to a fresh worker and start with an empty store, while already-open tabs keep talking to the old one; the two versions then don't share anything. If the URL is unchanged, old and new tabs are on the same worker during a rolling deployment: keep `buster` stable across versions whose cached shapes are compatible, so an older tab doesn't wipe an entry the newer ones just filled — or accept the wipe and let the next writer refill it.
 
 [Per-query persistence](#per-query-persistence) avoids the whole-cache overwrite entirely: each query gets its own key, so tabs caching different queries add to the shared store instead of replacing each other's work, and an expired or unreadable entry drops only that query.
+
+### Which tabs share a worker
+
+A `SharedWorker` is identified by its script URL _and_ its name, and the script URL here is the worker asset your bundler copies into your output. Two applications built separately on one origin normally serve that asset from different (usually content-hashed) URLs, so they already get separate workers and separate stores without doing anything. Sharing happens when applications serve the _same_ worker file — a shell and micro-frontends built together, for instance — and that is what [`namespace`](#recommendations) exists for: it changes the worker's name so those applications get a worker each.
+
+## Security considerations
+
+The shared store is readable by any script on the origin. Nothing about the worker restricts an entry to the application that wrote it: same-origin code can open the same worker with `new SharedWorker(sameUrl, { name: "TANSTACK_QUERY_SHARED_CACHE_WORKER:MY_APP" })` and read every key in it, `namespace` or not. `namespace` is a collision guard, not an access boundary — the protection you get is `localStorage`'s, a store scoped to an origin rather than a private one.
+
+Treat it accordingly: don't persist anything you would not put in `localStorage`. Access tokens are the headline use case for this package and are a reasonable fit wherever you would already accept them in `localStorage`, but that is a decision worth making deliberately rather than inheriting from the example. To keep particular queries out of the shared store, exclude them with TanStack's `shouldDehydrateQuery`, or strip them in the persister's `serialize` hook.
 
 ## Browser Support
 
@@ -251,14 +261,16 @@ To get the most out of this package and ensure optimal performance, consider the
    });
    ```
 
-   By default every application on an origin shares a single `SharedWorker` (and therefore a single in-memory store), with `key` namespacing the entry within it. If you want a fully isolated worker process per application — so that other same-origin apps can't read your cached values — pass a `namespace` as well:
+   Applications that serve the same worker asset share a single `SharedWorker`, and therefore a single in-memory store, with `key` namespacing the entry within it. Pass a `namespace` as well to give this application a worker of its own — it changes the worker's name, so applications shipping the same worker file no longer land in the same store:
 
    ```typescript
    export const persister = createSharedWorkerPersister({
      key: APP_NAME,
-     namespace: APP_NAME, // dedicated SharedWorker, isolated from other apps on this origin
+     namespace: APP_NAME, // separate SharedWorker from other apps shipping this worker file
    });
    ```
+
+   Applications built separately usually get separate workers already, because the worker asset's URL differs between their bundles — see [Which tabs share a worker](#which-tabs-share-a-worker). And note that `namespace` does not stop same-origin code from opening the worker and reading it; see [Security considerations](#security-considerations).
 
 3. Implement Cache Busting
 
