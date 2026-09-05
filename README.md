@@ -310,6 +310,8 @@ Every failure this package raises is a `SharedWorkerStorageError` with a `code`,
 
 The same errors reach you as the rejection of a failed write, so a `retry` hook can read `code` too. Reads never reject ([why](#when-a-read-fails)), which is exactly why a failed read is reported: the error that stopped it is the report's `cause`, and the report carries that error's `code`. A write is not reported separately — its rejection already carries the error — and a terminal worker failure is reported once, no matter how many calls follow it.
 
+`onError` is diagnostic only: it never changes how a call settles, and that holds even when your handler throws. A throw from it is caught and written to the console together with the error it was given, and the read, write or worker failure that reported carries on exactly as it would have — a reporter that is itself broken can't turn a read into a rejection or leave a failed worker half-shut-down.
+
 To check synchronously whether persistence is live at all, read `mode` on the storage:
 
 ```typescript

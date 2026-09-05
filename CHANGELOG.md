@@ -21,7 +21,9 @@ history, so they summarise the visible behaviour rather than every change.
 - `onError` on both `createSharedWorkerStorage` and `createSharedWorkerPersister`, which takes
   the warnings and errors that previously only went to the console — the no-op fallback, a
   worker that failed, a read that resolved empty — so an application can log or report them
-  itself, or silence them.
+  itself, or silence them. It is diagnostic only: a throw from the handler is caught and
+  written to the console alongside the error it was given, and never changes how the call that
+  reported settles.
 - `SharedWorkerStorageError`, the error every failure is now raised and reported as, carrying a
   `code` of `"unsupported"`, `"transport"`, `"timeout"`, `"protocol"` or `"disposed"` so
   callers can branch on the cause without matching on message text.

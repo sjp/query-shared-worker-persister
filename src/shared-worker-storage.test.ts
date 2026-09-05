@@ -36,6 +36,16 @@ function createDeadPort(): PortAdapter {
   return { onmessage: null, postMessage() {} };
 }
 
+/** The error a call rejected with, asserted to be one of ours. */
+async function rejectionFrom(call: () => unknown): Promise<SharedWorkerStorageError> {
+  const error = await Promise.resolve(call()).then(
+    () => undefined,
+    (reason: unknown) => reason,
+  );
+  expect(error).toBeInstanceOf(SharedWorkerStorageError);
+  return error as SharedWorkerStorageError;
+}
+
 describe("createSharedWorkerStorage", () => {
   it("returns null for a missing key", async () => {
     const storage = createSharedWorkerStorage({ port: createFakePort() });
@@ -599,16 +609,6 @@ describe("diagnostics", () => {
     return { reported, onError: (error: SharedWorkerStorageError) => void reported.push(error) };
   }
 
-  /** The error a call rejected with, asserted to be one of ours. */
-  async function rejectionFrom(call: () => unknown): Promise<SharedWorkerStorageError> {
-    const error = await Promise.resolve(call()).then(
-      () => undefined,
-      (reason: unknown) => reason,
-    );
-    expect(error).toBeInstanceOf(SharedWorkerStorageError);
-    return error as SharedWorkerStorageError;
-  }
-
   /** Run `fn` with both console channels spied on, and hand it the spies. */
   async function withSilentConsole(
     fn: (console: {
@@ -749,6 +749,103 @@ describe("diagnostics", () => {
       } finally {
         warn.mockRestore();
       }
+    });
+  });
+});
+
+/**
+ * A reporter is the caller's code running inside ours, at the exact moments
+ * something is being promised: a read on its way to resolving empty, a dead
+ * worker halfway through being shut down. A logger that is itself broken has to
+ * stay a logging problem, and be loud about it.
+ */
+describe("an onError handler that throws", () => {
+  const thrown = new Error("logger down");
+  const throwingOnError = () => {
+    throw thrown;
+  };
+
+  /** Run `fn` with `console.error` spied on, and hand it the spy. */
+  async function withSpiedConsoleError(fn: (spy: ReturnType<typeof vi.spyOn>) => Promise<void>) {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await fn(spy);
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it("still resolves a failed read empty, and puts the throw on the console", async () => {
+    await withSpiedConsoleError(async (spy) => {
+      const storage = createSharedWorkerStorage({
+        port: createDeadPort(),
+        timeoutMs: 20,
+        onError: throwingOnError,
+      });
+      await expect(storage.getItem("k")).resolves.toBeNull();
+      await expect(storage.entries()).resolves.toEqual([]);
+      storage.dispose();
+      // One report per read, each one logged with the throw and the error the
+      // handler was given, so neither failure is lost.
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(spy).toHaveBeenCalledWith(
+        expect.stringContaining("onError handler threw"),
+        thrown,
+        expect.any(SharedWorkerStorageError),
+      );
+    });
+  });
+
+  it("leaves a failed write rejecting with its own error", async () => {
+    const storage = createSharedWorkerStorage({
+      port: createErrorPort(),
+      onError: throwingOnError,
+    });
+    expect((await rejectionFrom(() => storage.setItem("k", "v"))).code).toBe("protocol");
+    storage.dispose();
+  });
+
+  it("still shuts down a worker that failed after construction", async () => {
+    await withSpiedConsoleError(async (spy) => {
+      const worker = fakeSharedWorker({ dead: true });
+      const failure = await withSharedWorker(worker.FakeSharedWorker, async () => {
+        // Longer a timeout than the test could tolerate, so anything that
+        // settles proves it came from the failure rather than the timer.
+        const storage = createSharedWorkerStorage({ onError: throwingOnError, timeoutMs: 60_000 });
+        const inFlight = storage.setItem("k", "v");
+        worker.latest.fail("404");
+        const failure = await rejectionFrom(() => inFlight);
+        expect(failure.code).toBe("transport");
+        expect(failure.message).toContain("404");
+        // The bookkeeping the report interrupted all happened: the port is
+        // closed, later writes fail fast on the recorded error rather than
+        // waiting out the timeout, and later reads still resolve empty.
+        expect(worker.latest.close).toHaveBeenCalled();
+        await expect(storage.setItem("k", "v")).rejects.toBe(failure);
+        await expect(storage.getItem("k")).resolves.toBeNull();
+        storage.dispose();
+        return failure;
+      });
+      // One dead worker, one report, and one log of the handler that threw on it.
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalledWith(
+        expect.stringContaining("onError handler threw"),
+        thrown,
+        failure,
+      );
+    });
+  });
+
+  it("does not escape construction of an unsupported storage", async () => {
+    await withSpiedConsoleError(async (spy) => {
+      await withSharedWorker(undefined, () => {
+        expect(createSharedWorkerStorage({ onError: throwingOnError }).mode).toBe("noop");
+      });
+      expect(spy).toHaveBeenCalledWith(
+        expect.stringContaining("onError handler threw"),
+        thrown,
+        expect.any(SharedWorkerStorageError),
+      );
     });
   });
 });

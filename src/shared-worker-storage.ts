@@ -183,8 +183,11 @@ export interface CreateSharedWorkerStorageOptions {
    * storage you were handed persists nothing.
    *
    * Purely diagnostic — what is reported here doesn't change how any call
-   * settles. A failed write isn't reported, since its rejection already carries
-   * the error; a failed read is, because resolving empty hides it.
+   * settles, and that holds even if this callback throws: the throw is caught
+   * and written to the console alongside the error it interrupted, and the call
+   * that reported settles exactly as it would have. A failed write isn't
+   * reported, since its rejection already carries the error; a failed read is,
+   * because resolving empty hides it.
    */
   onError?: ((error: SharedWorkerStorageError) => void) | undefined;
 }
@@ -300,13 +303,16 @@ export function createSharedWorkerStorage(
   // posting into the void and waiting out its timeout. The error is reported
   // here and only here, so a fatal failure is reported once no matter how many
   // requests follow it.
+  //
+  // The bookkeeping runs before the report, so the storage is left consistent
+  // whatever the caller's reporter does with the error it is handed.
   function handleTransportError(error: SharedWorkerStorageError, fatal: boolean) {
-    report(options, "error", error);
     if (fatal) {
       fatalError = error;
       closePort();
     }
     rejectPending(error);
+    report(options, "error", error);
   }
 
   const connection =
@@ -500,14 +506,32 @@ export function createSharedWorkerStorage(
  * Send a diagnostic to the caller's `onError`, or to the console when there is
  * none. `level` picks the console method only; a caller taking these over gets
  * one channel and sorts by the error's `code`.
+ *
+ * Never throws. Reporting is woven through paths that promise something to the
+ * caller — a read resolving empty, a fatal failure closing the port and
+ * rejecting what was in flight — and a reporter that threw would otherwise
+ * break the promise it was only meant to describe. A throw is caught and
+ * written to the console, together with the report it interrupted, so a broken
+ * logger is visible rather than silent.
  */
 function report(
   options: CreateSharedWorkerStorageOptions,
   level: "warn" | "error",
   error: SharedWorkerStorageError,
 ): void {
-  if (options.onError) options.onError(error);
-  else console[level](`[${PACKAGE_NAME}] ${error.message}`);
+  if (!options.onError) {
+    console[level](`[${PACKAGE_NAME}] ${error.message}`);
+    return;
+  }
+  try {
+    options.onError(error);
+  } catch (thrown) {
+    console.error(
+      `[${PACKAGE_NAME}] The onError handler threw while reporting: ${error.message}`,
+      thrown,
+      error,
+    );
+  }
 }
 
 /** The rejection every request made after `dispose()` gets. */
