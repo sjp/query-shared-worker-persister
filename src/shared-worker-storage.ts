@@ -108,9 +108,10 @@ export interface SharedWorkerStorage extends AsyncStorage {
    */
   readonly mode: "shared-worker" | "noop";
   /**
-   * Detach the port handler and settle any in-flight requests. Idempotent: a
-   * second call does nothing. Once disposed the storage stays disposed: later
-   * writes reject straight away, and later reads resolve empty.
+   * Detach this storage's handlers and settle any in-flight requests.
+   * Idempotent: a second call does nothing. Once disposed the storage stays
+   * disposed: later writes reject straight away, later reads resolve empty, and
+   * a worker that fails afterwards is neither recorded nor reported.
    */
   dispose: () => void;
   /**
@@ -329,15 +330,21 @@ export function createSharedWorkerStorage(
     pending.clear();
   }
 
-  /** Detach the port handlers and close it. Safe to call more than once. */
+  /**
+   * Detach every handler this storage installed and close the port. Safe to
+   * call more than once. Detaching matters as much as closing: a handler left
+   * on the `SharedWorker` object keeps the whole storage — its pending map, its
+   * options, its port — reachable from an event that may never fire.
+   */
   function closePort() {
     if (closed) return;
     closed = true;
-    // A storage disposed before it opened a port has nothing to detach.
-    if (!port) return;
-    port.onmessage = null;
-    port.onmessageerror = null;
-    port.close?.();
+    // A storage disposed before it opened a connection has nothing to detach.
+    if (!connection) return;
+    connection.detach();
+    connection.port.onmessage = null;
+    connection.port.onmessageerror = null;
+    connection.port.close?.();
   }
 
   // The worker itself failing leaves nothing to talk to, and the failure can't
@@ -352,6 +359,11 @@ export function createSharedWorkerStorage(
   // The bookkeeping runs before the report, so the storage is left consistent
   // whatever the caller's reporter does with the error it is handed.
   function handleWorkerFailure(error: SharedWorkerStorageError) {
+    // A worker that dies after the caller let go of the storage is not news:
+    // every request is already rejecting with `disposed`, and nothing the
+    // caller could do would change that. Leave the error state alone and say
+    // nothing.
+    if (disposed) return;
     fatalError = error;
     closePort();
     rejectPending(error);
@@ -361,9 +373,14 @@ export function createSharedWorkerStorage(
   // A storage that is already disposed has nothing to say and nowhere to say
   // it, so no worker is constructed and an injected port is left as it was
   // found — never started, never closed, still the caller's to use.
-  const port = abortedUpFront
+  const connection = abortedUpFront
     ? undefined
-    : (options.port ?? connectSharedWorker(options, handleWorkerFailure));
+    : options.port
+      ? // An injected port is the caller's own transport: there is no worker
+        // behind it and so nothing of ours to take back off it.
+        { port: options.port, detach: () => {} }
+      : connectSharedWorker(options, handleWorkerFailure);
+  const port = connection?.port;
 
   // Constructing the worker can fail outright rather than failing later through
   // `onerror`; there is no transport to set up in that case, so degrade to the
@@ -718,9 +735,20 @@ function createNoopStorage(): SharedWorkerStorage {
   };
 }
 
+/** A live `SharedWorker` connection: its port, and a way to let go of it. */
+interface SharedWorkerConnection {
+  port: PortAdapter;
+  /**
+   * Take this package's handler back off the `SharedWorker` object, so a worker
+   * that fails later has nothing to call and holds nothing of the storage.
+   */
+  detach: () => void;
+}
+
 /**
- * Instantiate the shared `cache.worker.ts` and return its port, or `undefined`
- * if the constructor rejected the call — an opaque origin, a `blob:`/`data:`/
+ * Instantiate the shared `cache.worker.ts` and return its port together with a
+ * `detach` that takes this package's handler back off the worker, or
+ * `undefined` if the constructor rejected the call — an opaque origin, a `blob:`/`data:`/
  * `file:` document, or a policy that disables workers all expose `SharedWorker`
  * and then throw on construction. That is reported like an unsupported
  * environment, under the same `unsupported` code, and the caller degrades to
@@ -734,12 +762,13 @@ function createNoopStorage(): SharedWorkerStorage {
  * `workerUrl` overrides) so the
  * storage can fail pending requests fast instead of waiting for each to time
  * out. That failure is unrecoverable — there is no worker to reconnect to — so
- * callers are expected to treat it as terminal.
+ * callers are expected to treat it as terminal, and `detach` is how they stop
+ * hearing about it once they have.
  */
 function connectSharedWorker(
   options: CreateSharedWorkerStorageOptions,
   onFatal?: (error: SharedWorkerStorageError) => void,
-): PortAdapter | undefined {
+): SharedWorkerConnection | undefined {
   // This package builds with `vp pack` (tsdown), which ships `cache.worker.ts`
   // as its own sibling entry (`dist/cache.worker.js`) and leaves this
   // `new URL("./cache.worker.js", import.meta.url)` reference untouched, so at
@@ -786,5 +815,10 @@ function connectSharedWorker(
       ),
     );
   };
-  return worker.port;
+  return {
+    port: worker.port,
+    detach: () => {
+      worker.onerror = null;
+    },
+  };
 }

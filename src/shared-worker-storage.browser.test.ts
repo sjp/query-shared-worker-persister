@@ -202,6 +202,27 @@ describe("a worker whose script cannot be loaded", () => {
     expect(reported).toHaveLength(1);
     expect(reported[0]?.code).toBe("transport");
   });
+
+  it("reports nothing when the storage was disposed before the load failed", async () => {
+    const { reported, onError } = recorder();
+    const storage = open({
+      workerUrl: "/definitely-missing/cache.worker.js",
+      timeoutMs: 30_000,
+      onError,
+    });
+
+    // Disposed in the same tick the worker was constructed, as a component
+    // that mounts and unmounts immediately does, and well before Chromium has
+    // finished failing to fetch the script.
+    storage.dispose();
+
+    // Long enough for that fetch to fail and fire the event this connection no
+    // longer listens for.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(reported).toEqual([]);
+    const error = await rejectionFrom(() => storage.setItem(uniqueKey("missing"), "v"));
+    expect(error.code).toBe("disposed");
+  });
 });
 
 describe("a worker hosted at an explicit workerUrl", () => {

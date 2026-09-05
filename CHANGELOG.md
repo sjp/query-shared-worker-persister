@@ -114,6 +114,12 @@ history, so they summarise the visible behaviour rather than every change.
   — which may be any same-origin script addressing the same worker — got no reply at all and
   waited out its full timeout. Handling a message now also contains an unexpected failure of
   any kind: it is logged and, when the message carried a usable `id`, answered as an error.
+- `dispose()` takes this package's handler back off the `SharedWorker` object, so a worker
+  script that fails to load after the storage was disposed no longer logs or reports a
+  `"transport"` error for a storage the caller has already let go of, and no longer keeps that
+  storage reachable from the pending failure event. A component that creates a persister and
+  unmounts immediately — a double-mount under React StrictMode, or a route that redirects — saw
+  that report whenever the worker asset was missing.
 
 ## [0.2.0] - 2026-06-03
 

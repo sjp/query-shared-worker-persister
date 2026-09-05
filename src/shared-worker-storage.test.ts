@@ -681,6 +681,41 @@ describe("when the SharedWorker itself fails", () => {
       error.mockRestore();
     }
   });
+
+  it("says nothing when the worker fails after the storage was disposed", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const reported: SharedWorkerStorageError[] = [];
+    try {
+      const worker = fakeSharedWorker({ dead: true });
+      await withSharedWorker(worker.FakeSharedWorker, async () => {
+        const storage = createSharedWorkerStorage({
+          timeoutMs: 60_000,
+          onError: (failure) => void reported.push(failure),
+        });
+        const instance = worker.latest;
+
+        storage.dispose();
+
+        // Nothing of ours is left on the worker, so the failure the browser is
+        // about to report has no handler to reach and the storage it would
+        // have referenced is free.
+        expect(instance.onerror).toBeNull();
+        instance.fail("404");
+        expect(reported).toEqual([]);
+        // The storage still fails for the reason the caller gave it, rather
+        // than for the worker that died after they let go of it.
+        const failure = await rejectionFrom(() => storage.setItem("k", "v"));
+        expect(failure.code).toBe("disposed");
+        await expect(storage.getItem("k")).resolves.toBeNull();
+      });
+      expect(error).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
 });
 
 describe("when the port refuses the message", () => {
