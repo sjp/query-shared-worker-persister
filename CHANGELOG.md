@@ -46,6 +46,8 @@ history, so they summarise the visible behaviour rather than every change.
   which previously hid the storage it created and could only be torn down through `signal`. Its
   type is exported as `SharedWorkerPersister`.
 - `keywords`, `bugs` and `engines` in the manifest.
+- `CHANGELOG.md` ships in the published package, so what changed between versions can be
+  read from `node_modules` or a registry file viewer without leaving for the repository.
 
 ### Changed
 

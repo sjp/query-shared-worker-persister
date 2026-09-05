@@ -129,7 +129,8 @@ npm provenance attestation pointing back at that commit and workflow run.
 To cut a release:
 
 1. Move the `Unreleased` entries in `CHANGELOG.md` under a new version heading with today's
-   date, and start a fresh `Unreleased` section.
+   date, and start a fresh `Unreleased` section. The file is listed in `files`, so it ships in
+   the tarball and the entries written here are what a consumer reads from `node_modules`.
 2. Bump `version` in `package.json` (`npm version <major|minor|patch> --no-git-tag-version`
    keeps the lockfile in step).
 3. Commit both, then tag the commit `v<version>` and push the commit and the tag.

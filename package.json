@@ -27,7 +27,8 @@
     "url": "git+https://github.com/sjp/query-shared-worker-persister.git"
   },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
   "type": "module",
   "sideEffects": [
