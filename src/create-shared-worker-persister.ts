@@ -8,8 +8,11 @@ export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptio
   /**
    * Reject a request to the SharedWorker after this many ms. Default 10s. Worth
    * raising on slow or heavily throttled pages and lowering when you would
-   * rather fall back to the network quickly. See
-   * {@link createSharedWorkerStorage}'s `timeoutMs`.
+   * rather fall back to the network quickly.
+   *
+   * Must be greater than `0` and at most `2147483647` (about 24.8 days), or
+   * `Infinity` to wait indefinitely; anything else throws a `RangeError` here.
+   * See {@link createSharedWorkerStorage}'s `timeoutMs`.
    */
   timeoutMs?: number | undefined;
   /**

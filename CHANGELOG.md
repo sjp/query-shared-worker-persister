@@ -59,6 +59,14 @@ history, so they summarise the visible behaviour rather than every change.
 - Every optional option on `createSharedWorkerStorage` and `createSharedWorkerPersister` now
   accepts an explicit `undefined`, so projects built with `exactOptionalPropertyTypes` can pass
   an option they computed conditionally.
+- `timeoutMs` is validated when the storage or persister is created, and a value no timer can
+  honour — `0`, a negative number, `NaN`, or a finite value above `2147483647` — now throws a
+  `RangeError` naming the option and its range. Each of those was previously passed straight to
+  `setTimeout`, which fires on them immediately, so every request failed on the next tick and
+  the cache looked permanently cold rather than misconfigured.
+- `timeoutMs: Infinity` means no timeout: the request waits for the worker's answer indefinitely
+  and is otherwise settled only by a transport failure or by disposal. It previously overflowed
+  the timer's 32-bit delay and timed every request out at once.
 
 ### Fixed
 

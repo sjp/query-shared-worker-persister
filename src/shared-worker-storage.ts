@@ -16,6 +16,17 @@ const PACKAGE_NAME = "@sjpnz/query-shared-worker-persister";
  */
 const WORKER_NAME = "TANSTACK_QUERY_SHARED_CACHE_WORKER";
 
+/**
+ * The longest delay `setTimeout` can hold. The delay is stored as a 32-bit
+ * signed integer, and a larger one overflows: browsers fire it on the next
+ * tick, Node warns and treats it as 1ms. Either way a `timeoutMs` above this
+ * would expire immediately rather than far in the future, which is the opposite
+ * of what the caller asked for. Rejected up front rather than clamped, since
+ * silently substituting a different deadline is its own surprise; `Infinity` is
+ * the way to say "wait as long as it takes".
+ */
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
 /** Which kind of failure a {@link SharedWorkerStorageError} describes. */
 export type SharedWorkerStorageErrorCode =
   | "unsupported"
@@ -121,7 +132,17 @@ export interface SharedWorkerStorage extends AsyncStorage {
 // which otherwise distinguishes an absent key from a key set to `undefined`.
 // Omitting an option and passing it as `undefined` mean the same thing here.
 export interface CreateSharedWorkerStorageOptions {
-  /** Reject a pending request after this many ms. Default 10s. */
+  /**
+   * Reject a pending request after this many ms. Default 10s.
+   *
+   * Must be greater than `0` and at most `2147483647` (about 24.8 days), which
+   * is the largest delay a timer can hold; `Infinity` is also accepted and
+   * means no timeout at all, leaving a request to be settled by the worker's
+   * answer, a transport failure or `dispose()`. Anything else — `0`, a negative
+   * number, `NaN`, or a finite value past the limit — throws a `RangeError`
+   * when the storage is created, because each of them would otherwise time
+   * every request out immediately and leave the cache permanently cold.
+   */
   timeoutMs?: number | undefined;
   /**
    * Give this app its own SharedWorker, and its own `CacheStore`, by changing
@@ -198,7 +219,8 @@ interface Pending {
   op: StorageRequest["op"];
   resolve: (value: StorageResult) => void;
   reject: (reason: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  /** Absent when `timeoutMs` is `Infinity`, where the request has no deadline. */
+  timer: ReturnType<typeof setTimeout> | undefined;
 }
 
 /**
@@ -246,11 +268,19 @@ export function isSharedWorkerSupported(): boolean {
  * Everything reported goes to the console unless `onError` is supplied, in which
  * case it goes there and the console is left alone. Each report is a
  * {@link SharedWorkerStorageError} carrying a `code` for the kind of failure.
+ *
+ * An out-of-range `timeoutMs` is the one thing that throws rather than being
+ * reported: it is a programming error, and a deadline no timer can honour would
+ * otherwise leave the cache silently and permanently cold. See
+ * {@link CreateSharedWorkerStorageOptions.timeoutMs} for the accepted range.
  */
 export function createSharedWorkerStorage(
   options: CreateSharedWorkerStorageOptions = {},
 ): SharedWorkerStorage {
   const { timeoutMs = 10_000 } = options;
+  // Before the support check, so a bad option is a hard error everywhere rather
+  // than one that only surfaces in environments that have a SharedWorker.
+  validateTimeoutMs(timeoutMs);
 
   if (!options.port && !isSharedWorkerSupported()) {
     report(
@@ -275,7 +305,7 @@ export function createSharedWorkerStorage(
 
   function rejectPending(error: SharedWorkerStorageError) {
     for (const entry of pending.values()) {
-      clearTimeout(entry.timer);
+      if (entry.timer !== undefined) clearTimeout(entry.timer);
       entry.reject(error);
     }
     pending.clear();
@@ -334,7 +364,7 @@ export function createSharedWorkerStorage(
     const entry = pending.get(message.id);
     if (!entry) return; // already timed out, or a stray message — ignore
     pending.delete(message.id);
-    clearTimeout(entry.timer);
+    if (entry.timer !== undefined) clearTimeout(entry.timer);
     if (message.ok) {
       // The envelope alone doesn't say which result shape is legal - that
       // follows from the request. Checking it against the operation we sent
@@ -387,15 +417,21 @@ export function createSharedWorkerStorage(
     const id = nextId++;
     const message = build(id);
     return new Promise<StorageResult>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pending.delete(id);
-        reject(
-          new SharedWorkerStorageError(
-            "timeout",
-            `SharedWorker storage request timed out after ${timeoutMs}ms`,
-          ),
-        );
-      }, timeoutMs);
+      // `Infinity` asks for no deadline at all, so no timer is created: the
+      // request stays pending until the worker answers, the transport fails, or
+      // the storage is disposed.
+      const timer =
+        timeoutMs === Number.POSITIVE_INFINITY
+          ? undefined
+          : setTimeout(() => {
+              pending.delete(id);
+              reject(
+                new SharedWorkerStorageError(
+                  "timeout",
+                  `SharedWorker storage request timed out after ${timeoutMs}ms`,
+                ),
+              );
+            }, timeoutMs);
       pending.set(id, { op: message.op, resolve, reject, timer });
       port.postMessage(message);
     });
@@ -530,6 +566,34 @@ function report(
       `[${PACKAGE_NAME}] The onError handler threw while reporting: ${error.message}`,
       thrown,
       error,
+    );
+  }
+}
+
+/**
+ * Reject a `timeoutMs` that a timer cannot honour, before anything is built.
+ *
+ * Every value refused here is one that `setTimeout` would accept and then fire
+ * on immediately: `0` and negatives are due at once, `NaN` and non-numbers
+ * coerce to `0`, and anything past {@link MAX_TIMEOUT_MS} overflows the timer's
+ * 32-bit delay. All of them make every request fail at once — writes rejecting and
+ * reads resolving empty — which reads as a cache that is simply always cold
+ * rather than as a mistyped option. A `RangeError` at construction says so
+ * instead, since this can only ever be a programming error.
+ *
+ * `Infinity` is deliberately allowed: it is the one out-of-range value with an
+ * obvious meaning, and it is honoured as "no timeout" rather than passed to a
+ * timer that would overflow it.
+ */
+function validateTimeoutMs(timeoutMs: number): void {
+  if (timeoutMs === Number.POSITIVE_INFINITY) return;
+  // `Number.isFinite` rather than a `typeof` check: it rejects `NaN` and, for
+  // callers without types, anything that isn't a number at all.
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS) {
+    throw new RangeError(
+      `[${PACKAGE_NAME}] timeoutMs must be a number greater than 0 and at most ` +
+        `${MAX_TIMEOUT_MS} (about 24.8 days), or Infinity to wait indefinitely; ` +
+        `received ${String(timeoutMs)}.`,
     );
   }
 }

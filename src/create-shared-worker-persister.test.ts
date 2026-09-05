@@ -44,6 +44,18 @@ describe("createSharedWorkerPersister", () => {
     });
   });
 
+  it("rejects an out-of-range timeoutMs, so a bad option fails at construction", async () => {
+    const { FakeSharedWorker } = fakeSharedWorker();
+    await withSharedWorker(FakeSharedWorker, () => {
+      // Without validation `setTimeout` would take these and fire at once, so
+      // every request through the persister would fail on the next tick.
+      expect(() => createSharedWorkerPersister({ timeoutMs: 0 })).toThrow(RangeError);
+      expect(() => createSharedWorkerPersister({ timeoutMs: Number.NaN })).toThrow(
+        /timeoutMs must be a number greater than 0/,
+      );
+    });
+  });
+
   it("forwards onError, so the storage's diagnostics reach the caller", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {

@@ -288,6 +288,75 @@ describe("createSharedWorkerStorage", () => {
 });
 
 /**
+ * Every value rejected here is one `setTimeout` accepts and then fires on
+ * immediately, so without validation the option would look honoured while every
+ * request failed on the next tick - a cache that is simply always cold.
+ */
+describe("the timeoutMs option", () => {
+  const invalid: Array<[label: string, value: number]> = [
+    ["zero", 0],
+    ["negative", -1],
+    ["NaN", Number.NaN],
+    ["-Infinity", Number.NEGATIVE_INFINITY],
+    // One past the largest delay a 32-bit timer can hold, which overflows to 0.
+    ["above the timer limit", 2_147_483_648],
+  ];
+
+  for (const [label, value] of invalid) {
+    it(`throws for a ${label} timeout, naming the option and the range`, () => {
+      expect(() => createSharedWorkerStorage({ port: createFakePort(), timeoutMs: value })).toThrow(
+        RangeError,
+      );
+      expect(() => createSharedWorkerStorage({ port: createFakePort(), timeoutMs: value })).toThrow(
+        /timeoutMs must be a number greater than 0 and at most 2147483647/,
+      );
+    });
+  }
+
+  it("throws even where SharedWorker is unavailable, so the option is checked everywhere", async () => {
+    await withSharedWorker(undefined, () => {
+      expect(() => createSharedWorkerStorage({ timeoutMs: 0 })).toThrow(RangeError);
+    });
+  });
+
+  it("accepts the largest delay a timer can hold", () => {
+    const storage = createSharedWorkerStorage({
+      port: createFakePort(),
+      timeoutMs: 2_147_483_647,
+    });
+    expect(storage.mode).toBe("shared-worker");
+    storage.dispose();
+  });
+
+  it("leaves a request pending forever when given Infinity", async () => {
+    const storage = createSharedWorkerStorage({
+      port: createDeadPort(),
+      timeoutMs: Number.POSITIVE_INFINITY,
+    });
+    const write = Promise.resolve(storage.setItem("k", "v"));
+    const settled = vi.fn();
+    void write.then(settled, settled);
+    // Long enough that any timer the overflow would have created - the 0ms one a
+    // raw `setTimeout(fn, Infinity)` produces - would have fired several times.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(settled).not.toHaveBeenCalled();
+
+    // Only disposal settles it, and the write rejects rather than hanging on.
+    storage.dispose();
+    await expect(write).rejects.toThrow(/disposed/);
+  });
+
+  it("still answers a request normally when given Infinity", async () => {
+    using storage = createSharedWorkerStorage({
+      port: createFakePort(),
+      timeoutMs: Number.POSITIVE_INFINITY,
+    });
+    await storage.setItem("k", "v");
+    await expect(storage.getItem("k")).resolves.toBe("v");
+  });
+});
+
+/**
  * `persistQueryClient` reads a rejected restore as a corrupt cache and answers
  * it by calling `removeClient()` - which, on a store the worker shares, deletes
  * the entry every other tab is using. A tab that was merely slow would take the
