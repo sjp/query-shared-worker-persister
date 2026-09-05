@@ -56,7 +56,7 @@ Follow these steps to configure `QueryClient` persistence. The examples build on
 
 2. (Recommended) Use a [`broadcastQueryClient`](https://tanstack.com/query/latest/docs/framework/react/plugins/broadcastQueryClient):
 
-   For optimal performance and to ensure true global sharing of cached values across tabs, it's highly recommended to use a [`broadcastQueryClient`](https://tanstack.com/query/latest/docs/framework/react/plugins/broadcastQueryClient). This prevents different tabs from overwriting each other's cached values, while also keeping the shared cache fresh.
+   [`broadcastQueryClient`](https://tanstack.com/query/latest/docs/framework/react/plugins/broadcastQueryClient) mirrors cache updates between open tabs over a `BroadcastChannel`. This persister stores one serialised cache per `key` and reads it only once, at startup, so broadcasting is what keeps the tabs' caches in step and stops them from overwriting each other's persisted data. Treat it as part of the setup rather than optional polish, and read [How sharing works](#how-sharing-works) before deciding to go without it.
 
    The plugin is framework-agnostic and, in Tanstack's own terms, experimental — its API may change in a minor release.
 
@@ -109,7 +109,7 @@ unsubscribe();
 
 ### Per-query persistence
 
-By default the persister serialises the whole dehydrated cache under a single key, so the last tab to write wins and everything another tab had cached is replaced. TanStack's experimental per-query persister avoids that by storing one key per query hash, which suits a shared store much better: two tabs caching different queries add to the same store instead of overwriting each other.
+By default the persister serialises the whole dehydrated cache under a single key, so the last tab to write wins and everything another tab had cached is replaced (see [How sharing works](#how-sharing-works)). TanStack's experimental per-query persister avoids that by storing one key per query hash, which suits a shared store much better: two tabs caching different queries add to the same store instead of overwriting each other.
 
 Pass the storage (not the persister) to `experimental_createQueryPersister`:
 
@@ -141,6 +141,19 @@ await queryPersister.restoreQueries(queryClient);
 ```
 
 Use this _instead of_ `PersistQueryClientProvider` and `createSharedWorkerPersister`, not alongside them; running both persists the same data twice under different keys. Note that this API is marked experimental by TanStack and its shape may change in a minor release.
+
+## How sharing works
+
+The worker holds one in-memory store, shared by every tab connected to it. What that store does and does not synchronise is worth knowing before you rely on it:
+
+- **One value per key, written by whichever tab saved last.** `createSharedWorkerPersister` serialises the entire dehydrated `QueryClient` into a single string under its `key`, and each save replaces the previous value outright. A tab holding only queries A and B overwrites an entry that also held C.
+- **Restoring is a one-shot read at startup.** A tab reads the shared value once, while persistence is being set up, and never again. Anything another tab writes afterwards does not reach it, so the benefit is that a new tab starts warm rather than that open tabs stay in sync. Live sync is what `broadcastQueryClient` adds: with the in-memory caches kept in step, tabs write near-identical values instead of clobbering each other.
+- **A restore that doesn't produce a usable cache clears the entry for everyone.** `persistQueryClient` calls `removeClient()` when the `buster` doesn't match, when `maxAge` has elapsed, or when restoring throws — a request timeout included. Because the store is shared, one tab making that call empties the entry every other tab is using.
+- **Access tokens are no exception.** Sharing a token across tabs is the headline use case, and it is subject to the same overwrites and clears as any other query: a tab whose own cache no longer holds the token will persist a value without it.
+
+During a rolling deployment, tabs on the old and new versions are connected to the same worker. Keep `buster` stable across versions whose cached shapes are compatible, so an older tab doesn't wipe an entry the newer ones just filled — or accept the wipe and let the next writer refill it.
+
+[Per-query persistence](#per-query-persistence) avoids the whole-cache overwrite entirely: each query gets its own key, so tabs caching different queries add to the shared store instead of replacing each other's work, and an expired or unreadable entry drops only that query.
 
 ## Browser Support
 
@@ -243,7 +256,7 @@ To get the most out of this package and ensure optimal performance, consider the
 
 3. Implement Cache Busting
 
-   Provide an application version to invalidate the cache when it doesn't match the current application version. This ensures that outdated data isn't persisted when one tab/window has a newer application version than another.
+   Provide an application version to invalidate the cache when it doesn't match the current application version. This ensures that outdated data isn't persisted when one tab/window has a newer application version than another. Bear in mind that a mismatch clears the shared entry for every connected tab, not just the one that noticed — see [How sharing works](#how-sharing-works).
 
    Add a `buster` to the `persistOptions` from step 3 above:
 
