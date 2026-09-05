@@ -255,6 +255,8 @@ For a connection whose life is one block — a test, a script — declare it wit
 
 `using` needs TypeScript 5.2 or later to compile, and `Symbol.dispose` to exist at runtime. On a browser too old to have it, either apply the polyfill TypeScript documents (`Symbol.dispose ??= Symbol("Symbol.dispose")`, before the storage is created) or just call `dispose()` — it is the same teardown.
 
+Your `tsconfig` needs no extra `lib` entry for any of this. The package's declarations pull in `esnext.disposable` themselves, so they type check against a plain `lib: ["ES2022", "DOM"]` even with `skipLibCheck` off.
+
 When the lifetime is already governed by an `AbortSignal`, pass it instead and disposal follows the abort — an already-aborted signal disposes immediately:
 
 ```typescript

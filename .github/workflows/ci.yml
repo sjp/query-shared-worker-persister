@@ -45,4 +45,8 @@ jobs:
       # tarball, so this runs on the freshly built `dist/`. The profile matches
       # what the package supports: ESM through a bundler or a modern Node.
       - run: vp run check:package
+      # Type check a stand-in consumer against the built declarations, under a
+      # narrower `lib` than this package's own and with `skipLibCheck: false`, so
+      # a declaration that only compiles for us is caught here.
+      - run: vp run check:types-consumer
       - run: vp run test

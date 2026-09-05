@@ -53,6 +53,7 @@
     "check:fix": "vp check --fix",
     "check:package": "publint && attw --pack . --profile esm-only",
     "check:toolchain": "node scripts/check-vite-override.mjs",
+    "check:types-consumer": "tsc -p scripts/check-types-consumer",
     "lint": "vp lint",
     "playwright:install": "playwright install --with-deps chromium",
     "test": "vp test run",

@@ -64,6 +64,9 @@ history, so they summarise the visible behaviour rather than every change.
 
 - A cache read the worker could not answer resolves as empty rather than as `null`, so a
   timeout in one tab no longer makes TanStack treat the shared store as empty and overwrite it.
+- The published declarations reference the `esnext.disposable` lib, so the `[Symbol.dispose]()`
+  members no longer fail to compile in projects whose `lib` stops at `ES2022`..`ES2024` and that
+  check dependency types with `skipLibCheck: false`.
 
 ## [0.2.0] - 2026-06-03
 

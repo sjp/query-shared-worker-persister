@@ -20,6 +20,12 @@ export default defineConfig({
     platform: "browser",
     format: ["esm"],
     dts: true,
+    // The public types name `Symbol.dispose`, which only exists in the
+    // `esnext.disposable` lib. Consumers targeting `ES2022`..`ES2024` don't have
+    // it, and with `skipLibCheck: false` our declarations would fail to compile
+    // for them. The reference pulls the lib in from the declaration file itself,
+    // so nobody has to widen their own `lib` to use this package.
+    banner: { dts: '/// <reference lib="esnext.disposable" />' },
   },
   // Two suites, because they answer different questions. The Node suite drives
   // the code through fake ports and covers the logic exhaustively; the browser
