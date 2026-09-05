@@ -10,7 +10,7 @@ import {
   SharedWorkerStorageError,
 } from "./shared-worker-storage";
 import { createFakePort, fakeSharedWorker, withSharedWorker } from "./test-utils";
-import type { StorageRequest, StorageResponse } from "./worker/protocol";
+import type { StorageRequest, StorageResponse, StorageResult } from "./worker/protocol";
 import { CacheStore } from "./worker/store";
 
 /** The fake worker instance {@link fakeSharedWorker} hands back. */
@@ -186,14 +186,16 @@ describe("createSharedWorkerStorage", () => {
     await expect(inflight).rejects.toThrow(/disposed/);
   });
 
-  it("settles in-flight requests and logs when the port reports a message error", async () => {
+  it("logs a message error and leaves the requests in flight to their own fate", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const deadPort = createDeadPort();
-      const storage = createSharedWorkerStorage({ port: deadPort });
+      const storage = createSharedWorkerStorage({ port: deadPort, timeoutMs: 20 });
       const inflight = storage.setItem("k", "v");
       deadPort.onmessageerror?.({} as MessageEvent);
-      await expect(inflight).rejects.toThrow(/deserialized/);
+      // The event names no request, so this one is not settled by it: it fails
+      // on its own deadline, and says so rather than blaming the bad message.
+      await expect(inflight).rejects.toThrow(/timed out/);
       expect(error).toHaveBeenCalledTimes(1);
       storage.dispose();
     } finally {
@@ -889,6 +891,54 @@ describe("diagnostics", () => {
     });
     expect(reported).toHaveLength(1);
     expect(reported[0]?.code).toBe("transport");
+  });
+
+  it("costs only the request whose answer was lost, and reports the loss once", async () => {
+    const { reported, onError } = recorder();
+    const requests: StorageRequest[] = [];
+    // Answered by hand, so a response can be withheld from exactly one request
+    // the way a message that failed to deserialize withholds it.
+    const port: PortAdapter = {
+      onmessage: null,
+      onmessageerror: null,
+      postMessage(request) {
+        requests.push(request);
+      },
+    };
+    const answer = (request: StorageRequest, result: StorageResult) => {
+      port.onmessage?.({
+        data: { kind: "response", id: request.id, ok: true, result },
+      } as MessageEvent<StorageResponse>);
+    };
+
+    await withSilentConsole(async (spies) => {
+      const storage = createSharedWorkerStorage({ port, timeoutMs: 20, onError });
+      const lost = storage.getItem("lost");
+      const read = storage.getItem("k");
+      const write = storage.setItem("k", "v");
+      expect(requests).toHaveLength(3);
+
+      // The event carries no id, so the two requests whose responses are still
+      // on their way have to settle on them as though nothing had happened.
+      port.onmessageerror?.({} as MessageEvent);
+      answer(requests[1] as StorageRequest, "v");
+      answer(requests[2] as StorageRequest, null);
+      await expect(read).resolves.toBe("v");
+      await expect(write).resolves.toBeUndefined();
+
+      // Only the request that lost its answer pays, and it pays at its own
+      // deadline: a read, so it resolves empty.
+      await expect(lost).resolves.toBeNull();
+      expect(spies.error).not.toHaveBeenCalled();
+      expect(spies.warn).not.toHaveBeenCalled();
+      storage.dispose();
+    });
+
+    // The bad message, then the read that gave up on it. Neither is reported
+    // twice, and the two requests that settled normally are reported not at all.
+    expect(reported.map((error) => error.code)).toEqual(["transport", "timeout"]);
+    expect(reported[0]?.message).toContain("deserialized");
+    expect(reported[1]?.message).toContain("continuing as though it were empty");
   });
 
   it("reports a read that resolved empty, under the code of what stopped it", async () => {

@@ -260,8 +260,10 @@ export function isSharedWorkerSupported(): boolean {
  * is permanent: the error is reported once,
  * the port is closed, and every write from then on rejects with that same
  * error straight away rather than waiting out `timeoutMs`. A single
- * undeserializable response is treated as the lesser fault it is: the in-flight
- * requests settle, but the port stays open and later requests may still succeed.
+ * undeserializable response is treated as the lesser fault it is: it is
+ * reported and nothing else, so the port stays open, the requests in flight
+ * settle on their own responses, and only the request whose answer was lost
+ * falls to its timeout.
  *
  * Reads (`getItem` and `entries`) never reject at all: a read the worker
  * couldn't answer resolves empty and is reported, so an unreachable cache looks
@@ -338,27 +340,20 @@ export function createSharedWorkerStorage(
     port.close?.();
   }
 
-  // A transport-level failure can't be tied to a single request id, so reject
-  // everything in flight rather than letting each call hang until its timeout.
-  // Reported too, since the most likely cause — a misresolved worker asset URL —
-  // is otherwise invisible until the 10s timeout.
-  //
-  // The two failures differ in how much they condemn: a message that can't be
-  // deserialized is a single bad response, so the port stays open and later
-  // requests are free to succeed, while the worker itself failing means there is
-  // nothing left to talk to. The latter is `fatal`: the port is closed and every
-  // subsequent request rejects immediately with this same error instead of
-  // posting into the void and waiting out its timeout. The error is reported
-  // here and only here, so a fatal failure is reported once no matter how many
-  // requests follow it.
+  // The worker itself failing leaves nothing to talk to, and the failure can't
+  // be tied to a single request id. So the port is closed, everything in flight
+  // is rejected rather than left to hang until its timeout, and every later
+  // request rejects immediately with this same error instead of posting into
+  // the void. Reported too, since the most likely cause — a misresolved worker
+  // asset URL — is otherwise invisible until the 10s timeout; reported here and
+  // only here, so one dead worker is one report no matter how many requests
+  // follow it.
   //
   // The bookkeeping runs before the report, so the storage is left consistent
   // whatever the caller's reporter does with the error it is handed.
-  function handleTransportError(error: SharedWorkerStorageError, fatal: boolean) {
-    if (fatal) {
-      fatalError = error;
-      closePort();
-    }
+  function handleWorkerFailure(error: SharedWorkerStorageError) {
+    fatalError = error;
+    closePort();
     rejectPending(error);
     report(options, "error", error);
   }
@@ -368,7 +363,7 @@ export function createSharedWorkerStorage(
   // found — never started, never closed, still the caller's to use.
   const port = abortedUpFront
     ? undefined
-    : (options.port ?? connectSharedWorker(options, (error) => handleTransportError(error, true)));
+    : (options.port ?? connectSharedWorker(options, handleWorkerFailure));
 
   // Constructing the worker can fail outright rather than failing later through
   // `onerror`; there is no transport to set up in that case, so degrade to the
@@ -407,13 +402,22 @@ export function createSharedWorkerStorage(
         entry.reject(new SharedWorkerStorageError("protocol", message.error));
       }
     };
+    // One response the structured clone algorithm couldn't reconstruct. The
+    // event says nothing about which request it belonged to, and the port is
+    // still good, so this is reported and otherwise left alone: the one request
+    // whose answer was lost settles by its own timeout, and every other request
+    // in flight goes on to settle on its own response. Rejecting the whole
+    // pending map here would instead fail concurrent writes for a fault that
+    // was not theirs and resolve concurrent reads empty, and each of those
+    // reads would report the same bad message a second time.
     port.onmessageerror = () => {
-      handleTransportError(
+      report(
+        options,
+        "error",
         new SharedWorkerStorageError(
           "transport",
           "SharedWorker sent a message that could not be deserialized",
         ),
-        false,
       );
     };
     port.start?.();
