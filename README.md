@@ -231,6 +231,47 @@ import {
 const persister = isSharedWorkerSupported() ? createSharedWorkerPersister() : undefined;
 ```
 
+### Server-side rendering
+
+Importing this package on the server is safe. Under a framework that renders on the server — Next.js, Remix, SvelteKit, Nuxt — the module that creates the persister is evaluated there too, and the server has no `SharedWorker`: `isSharedWorkerSupported()` is `false`, both entry points hand back the no-op storage, and the fallback warning above is reported once per call. A persister created at module scope therefore leaves one line in the server log at startup:
+
+```text
+[@sjpnz/query-shared-worker-persister] SharedWorker is unavailable in this environment; falling back to no-op storage. ...
+```
+
+That line is expected rather than a sign of a misconfiguration. The server-side persister is inert: every read resolves empty, every write is dropped, nothing throws, and the browser builds its own persister when the same module is evaluated there. Nothing about server rendering needs to change to use this package.
+
+To keep the server log clean, take the reports with `onError` and drop the one warning the server will always produce:
+
+```typescript
+// query-client.ts
+import { QueryClient } from "@tanstack/react-query";
+import { createSharedWorkerPersister } from "@sjpnz/query-shared-worker-persister";
+
+const isServer = typeof window === "undefined";
+
+export const queryClient = new QueryClient();
+export const persister = createSharedWorkerPersister({
+  onError: (error) => {
+    // The server has no SharedWorker and never will; every other report still matters.
+    if (isServer && error.code === "unsupported") return;
+    console.warn(error.message, { code: error.code, cause: error.cause });
+  },
+});
+```
+
+The alternative is to not create a persister on the server at all, by loading the component that owns it browser-side only — in Next.js, `next/dynamic` with `ssr: false`:
+
+```tsx
+// app/providers.tsx
+import dynamic from "next/dynamic";
+
+// Imports `./persisted-providers`, and with it the persister, only in the browser.
+const PersistedProviders = dynamic(() => import("./persisted-providers"), { ssr: false });
+```
+
+Two things to know before reaching for that. It only helps if nothing rendered on the server imports the module that creates the persister — one server-side import of `query-client.ts` brings the warning back. And a `"use client"` component is still rendered once on the server, so moving the `createSharedWorkerPersister()` call into a `useState` initialiser inside one does not on its own keep it off the server.
+
 ### Disposal
 
 Most apps keep a single persister for the page's lifetime and never need to dispose it. If you do recreate the persister (for example in tests, micro-frontends, or hot-module reloads), release the underlying SharedWorker connection when you're done:
