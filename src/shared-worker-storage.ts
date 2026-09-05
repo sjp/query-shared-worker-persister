@@ -4,7 +4,7 @@ import type { StorageRequest, StorageResponse } from "./worker/protocol";
 /** The minimal `MessagePort` surface we use — lets tests inject a fake port. */
 export interface PortAdapter {
   postMessage: (message: StorageRequest) => void;
-  onmessage: ((event: MessageEvent<StorageResponse>) => void) | null;
+  onmessage: ((event: MessageEvent<unknown>) => void) | null;
   /** Fired when an incoming message can't be deserialized. Real `MessagePort` has this. */
   onmessageerror?: ((event: MessageEvent) => void) | null;
   start?: () => void;
@@ -163,8 +163,12 @@ export function createSharedWorkerStorage(
   if (!connection) return createNoopStorage();
   const port: PortAdapter = connection;
 
-  port.onmessage = (event: MessageEvent<StorageResponse>) => {
+  port.onmessage = (event: MessageEvent<unknown>) => {
     const message = event.data;
+    // The worker is shared by `(scriptURL, name)`, so any same-origin script can
+    // open the same port and post to it. Only messages shaped like our responses
+    // are allowed to settle a pending request; everything else is not ours.
+    if (!isStorageResponse(message)) return;
     const entry = pending.get(message.id);
     if (!entry) return; // already timed out, or a stray message — ignore
     pending.delete(message.id);
@@ -234,6 +238,21 @@ export function createSharedWorkerStorage(
 
 /** Used to prefix the console warning so it's traceable to this package. */
 const PACKAGE_NAME = "@sjpnz/query-shared-worker-persister";
+
+/**
+ * Whether `data` is a well-formed {@link StorageResponse}. Checked field by
+ * field rather than trusting the declared `MessageEvent` type, which says
+ * nothing about what actually arrives on the port. An `ok: true` message whose
+ * `result` is missing fails this test, so a request is never resolved with a
+ * value the protocol doesn't allow.
+ */
+function isStorageResponse(data: unknown): data is StorageResponse {
+  if (typeof data !== "object" || data === null) return false;
+  const message = data as Record<string, unknown>;
+  if (message.kind !== "response" || typeof message.id !== "number") return false;
+  if (message.ok === true) return typeof message.result === "string" || message.result === null;
+  return message.ok === false && typeof message.error === "string";
+}
 
 /**
  * Storage that quietly does nothing: `getItem` always resolves `null` (so

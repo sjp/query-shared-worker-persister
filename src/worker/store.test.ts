@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import type { StorageRequest } from "./protocol";
 import { CacheStore } from "./store";
 
 describe("CacheStore", () => {
@@ -54,6 +55,17 @@ describe("CacheStore", () => {
       const result = store.handle({ kind: "request", id: 1, op: "removeItem", key: "k" });
       expect(result).toBeNull();
       expect(store.getItem("k")).toBeNull();
+    });
+
+    it("throws for an unknown operation instead of returning undefined", () => {
+      const store = new CacheStore();
+      const request = {
+        kind: "request",
+        id: 1,
+        op: "clear",
+        key: "k",
+      } as unknown as StorageRequest;
+      expect(() => store.handle(request)).toThrow(/clear/);
     });
   });
 });

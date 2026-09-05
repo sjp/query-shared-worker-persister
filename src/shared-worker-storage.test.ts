@@ -157,6 +157,34 @@ describe("createSharedWorkerStorage", () => {
     }
   });
 
+  it.each([
+    ["a message that is not a response", { kind: "broadcast", id: 1, payload: "hi" }],
+    ["a response with no ok flag", { kind: "response", id: 1, result: "v" }],
+    ["an ok response with no result", { kind: "response", id: 1, ok: true }],
+    ["an error response with no message", { kind: "response", id: 1, ok: false }],
+    ["a non-object payload", "hello"],
+  ])("ignores %s and leaves the request pending", async (_label, data) => {
+    const port: PortAdapter = { onmessage: null, postMessage() {} };
+    const storage = createSharedWorkerStorage({ port, timeoutMs: 20 });
+    const inflight = storage.getItem("k");
+    port.onmessage?.({ data } as MessageEvent<unknown>);
+    // Only the timeout settles it, proving the stray message never matched the
+    // pending id - it would otherwise have resolved with a bogus value.
+    await expect(inflight).rejects.toThrow(/timed out/);
+    storage.dispose();
+  });
+
+  it("still settles a real response delivered after a stray message", async () => {
+    const store = new CacheStore();
+    store.setItem("k", "v");
+    const port = createFakePort(store);
+    const storage = createSharedWorkerStorage({ port });
+    const inflight = storage.getItem("k");
+    port.onmessage?.({ data: { kind: "broadcast", id: 1 } } as MessageEvent<unknown>);
+    await expect(inflight).resolves.toBe("v");
+    storage.dispose();
+  });
+
   it("disposes when the provided signal aborts", async () => {
     const deadPort: PortAdapter = { onmessage: null, postMessage() {} };
     const controller = new AbortController();

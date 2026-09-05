@@ -88,4 +88,71 @@ describe("handleConnect", () => {
       { kind: "response", id: 2, ok: true, result: "v" },
     ]);
   });
+
+  describe("malformed messages", () => {
+    /** A port plus the messages it sent, wired to a fresh store. */
+    function connect() {
+      const sent: StorageResponse[] = [];
+      const port: WorkerPort = {
+        onmessage: null,
+        postMessage: (message) => sent.push(message),
+      };
+      const store = new CacheStore();
+      handleConnect(store, port);
+      return {
+        sent,
+        store,
+        deliver: (data: unknown) => port.onmessage?.({ data } as MessageEvent<unknown>),
+        messageError: () => port.onmessageerror?.({} as MessageEvent),
+      };
+    }
+
+    it.each([
+      ["an unknown op", { kind: "request", id: 5, op: "clear", key: "k" }],
+      ["a missing kind", { id: 5, op: "getItem", key: "k" }],
+      ["a non-string key", { kind: "request", id: 5, op: "getItem", key: 42 }],
+      ["a missing key", { kind: "request", id: 5, op: "getItem" }],
+      ["a non-string setItem value", { kind: "request", id: 5, op: "setItem", key: "k", value: 1 }],
+    ])("replies ok:false for %s carrying an id", (_label, data) => {
+      const { sent, deliver } = connect();
+      deliver(data);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toMatchObject({ kind: "response", id: 5, ok: false });
+    });
+
+    it("does not let a malformed request touch the store", () => {
+      const { store, deliver } = connect();
+      deliver({ kind: "request", id: 5, op: "setItem", key: "k", value: 1 });
+      expect(store.getItem("k")).toBeNull();
+    });
+
+    it.each([
+      ["no id", { kind: "request", op: "getItem", key: "k" }],
+      ["a non-numeric id", { kind: "request", id: "5", op: "getItem", key: "k" }],
+      ["a non-object payload", "hello"],
+      ["a null payload", null],
+    ])("logs and drops a message with %s", (_label, data) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { sent, deliver } = connect();
+        deliver(data);
+        expect(sent).toEqual([]);
+        expect(warn).toHaveBeenCalledTimes(1);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("logs when a message cannot be deserialized", () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const { sent, messageError } = connect();
+        messageError();
+        expect(error).toHaveBeenCalledTimes(1);
+        expect(sent).toEqual([]);
+      } finally {
+        error.mockRestore();
+      }
+    });
+  });
 });

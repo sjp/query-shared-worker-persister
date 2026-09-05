@@ -29,6 +29,10 @@ export class CacheStore {
    * `setItem`/`removeItem` resolve to `null`; `getItem` returns the stored
    * string or `null` when absent. Kept here (rather than in the worker) so the
    * request -> result mapping is covered by unit tests.
+   *
+   * An operation this store doesn't implement throws, which the caller turns
+   * into an error response. Returning `undefined` instead would leave the
+   * client resolving a value the protocol says can't occur.
    */
   handle(request: StorageRequest): string | null {
     switch (request.op) {
@@ -40,6 +44,12 @@ export class CacheStore {
       case "removeItem":
         this.removeItem(request.key);
         return null;
+      default: {
+        // `request` is `never` here, so read the operation back off the
+        // unnarrowed value to name it in the error.
+        const { op } = request as StorageRequest;
+        throw new Error(`Unknown storage operation: ${JSON.stringify(op)}`);
+      }
     }
   }
 }
