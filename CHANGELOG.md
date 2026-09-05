@@ -30,6 +30,9 @@ history, so they summarise the visible behaviour rather than every change.
 - `mode` on `SharedWorkerStorage` and on the persister returned by
   `createSharedWorkerPersister`, `"shared-worker"` or `"noop"`, so degrading to the no-op
   fallback is something code can see rather than only a console warning.
+- `port` on `createSharedWorkerPersister`, the same test seam `createSharedWorkerStorage` takes,
+  so an application that builds its persister through this function can be driven against an
+  in-process store in tests without assembling the storage and persister by hand.
 - `PortAdapter` is exported, so the object the `port` option accepts can now be named. The
   protocol types it is written in terms of (`StorageRequest`, `StorageResponse`,
   `StorageResult`, `StorageEntries`) are exported by name rather than wholesale.

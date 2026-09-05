@@ -9,7 +9,8 @@ import {
   type CreateSharedWorkerPersisterOptions,
 } from "./create-shared-worker-persister";
 import type { SharedWorkerStorageError } from "./shared-worker-storage";
-import { fakeSharedWorker, withSharedWorker } from "./test-utils";
+import { createFakePort, fakeSharedWorker, withSharedWorker } from "./test-utils";
+import { CacheStore } from "./worker/store";
 
 /** A minimal client to persist; the persister only ever serializes it. */
 function persistedClient(): PersistedClient {
@@ -116,6 +117,34 @@ describe("createSharedWorkerPersister", () => {
     expect(constructions.map((construction) => construction.url)).toEqual([
       "/static/cache.worker.js",
     ]);
+  });
+
+  it("talks over an injected port instead of constructing a worker", async () => {
+    const { FakeSharedWorker, constructions } = fakeSharedWorker();
+    const store = new CacheStore();
+    await withSharedWorker(FakeSharedWorker, async () => {
+      const persister = createSharedWorkerPersister({ port: createFakePort(store), key: "MY_APP" });
+      const client = persistedClient();
+      await persister.persistClient(client);
+      expect(store.getItem("MY_APP")).not.toBeNull();
+      await expect(persister.restoreClient()).resolves.toEqual(client);
+    });
+    // A port takes over from worker construction entirely, so the fake the
+    // global was pointed at must never have been called.
+    expect(constructions).toEqual([]);
+  });
+
+  it("uses an injected port where SharedWorker does not exist at all", async () => {
+    const store = new CacheStore();
+    await withSharedWorker(undefined, async () => {
+      // No support check happens on this path, so neither the no-op fallback
+      // nor its warning is reached and persistence still works.
+      const persister = createSharedWorkerPersister({ port: createFakePort(store), key: "MY_APP" });
+      expect(persister.mode).toBe("shared-worker");
+      const client = persistedClient();
+      await persister.persistClient(client);
+      await expect(persister.restoreClient()).resolves.toEqual(client);
+    });
   });
 
   it("forwards signal so aborting tears the storage down", async () => {

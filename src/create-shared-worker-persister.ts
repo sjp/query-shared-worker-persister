@@ -2,6 +2,7 @@ import { createAsyncStoragePersister } from "@tanstack/query-async-storage-persi
 import type { Persister } from "@tanstack/query-persist-client-core";
 import {
   createSharedWorkerStorage,
+  type PortAdapter,
   type SharedWorkerStorage,
   type SharedWorkerStorageError,
 } from "./shared-worker-storage";
@@ -40,6 +41,15 @@ export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptio
    * {@link createSharedWorkerStorage}'s `signal`.
    */
   signal?: AbortSignal | undefined;
+  /**
+   * Carry the protocol over this {@link PortAdapter} instead of constructing a
+   * `SharedWorker`, so an application wired up through this function can be
+   * tested against an in-process store. Supplying a port replaces worker
+   * construction entirely: `namespace` and `workerUrl` are ignored, no
+   * `SharedWorker` support check is made, and the persister never falls back to
+   * no-op. See {@link createSharedWorkerStorage}'s `port`.
+   */
+  port?: PortAdapter | undefined;
   /**
    * Receive the warnings and errors the storage would otherwise write to the
    * console — the no-op fallback, a failed worker, a read that resolved empty —
@@ -93,8 +103,15 @@ export interface SharedWorkerPersister extends Persister {
 export function createSharedWorkerPersister(
   options: CreateSharedWorkerPersisterOptions = {},
 ): SharedWorkerPersister {
-  const { timeoutMs, namespace, workerUrl, signal, onError, ...persisterOptions } = options;
-  const storage = createSharedWorkerStorage({ timeoutMs, namespace, workerUrl, signal, onError });
+  const { timeoutMs, namespace, workerUrl, signal, port, onError, ...persisterOptions } = options;
+  const storage = createSharedWorkerStorage({
+    timeoutMs,
+    namespace,
+    workerUrl,
+    signal,
+    port,
+    onError,
+  });
   const persister = createAsyncStoragePersister({ ...persisterOptions, storage });
   const dispose = () => {
     storage.dispose();

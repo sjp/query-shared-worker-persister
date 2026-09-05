@@ -348,6 +348,7 @@ Every `createAsyncStoragePersister` option except `storage` is forwarded untouch
 | `timeoutMs`    | `number`                                                          | `10000`                       | How long a read or write waits for the worker before giving up. Greater than `0` and at most `2147483647`, or `Infinity` for no timeout; anything else throws a `RangeError`. See [Request timeout](#request-timeout). |
 | `workerUrl`    | `string \| URL`                                                   | —                             | Load the worker from a copy you host, for builds that can't emit the packaged asset; see [Bundler requirements](#bundler-requirements).                                                                                |
 | `signal`       | `AbortSignal`                                                     | —                             | Disposes the underlying storage when aborted.                                                                                                                                                                          |
+| `port`         | `PortAdapter`                                                     | —                             | Carry the protocol over a port you supply instead of constructing a worker; see [Supplying your own port](#supplying-your-own-port).                                                                                   |
 | `onError`      | `(error: SharedWorkerStorageError) => void`                       | console                       | Receives the storage's warnings and errors instead of the console; see [Diagnostics](#diagnostics).                                                                                                                    |
 
 Beyond the `Persister` methods, the returned object carries the storage's teardown and its mode:
@@ -387,10 +388,11 @@ A write rejects with a `SharedWorkerStorageError` if the worker doesn't answer w
 
 #### Supplying your own port
 
-`port` takes over from worker construction: give it anything matching `PortAdapter` and the storage talks to that instead, ignoring `namespace` and `workerUrl` and skipping the `SharedWorker` support check and its no-op fallback.
+`port` takes over from worker construction: give it anything matching `PortAdapter` and the storage talks to that instead, ignoring `namespace` and `workerUrl` and skipping the `SharedWorker` support check and its no-op fallback. Both entry points accept it, so an application wired up with `createSharedWorkerPersister` can hand one in without rebuilding that wiring itself.
 
 ```typescript
 import {
+  createSharedWorkerPersister,
   createSharedWorkerStorage,
   type PortAdapter,
   type StorageRequest,
@@ -406,6 +408,7 @@ const port: PortAdapter = {
 };
 
 const storage = createSharedWorkerStorage({ port });
+const persister = createSharedWorkerPersister({ port });
 ```
 
 Every request carries an `id` and is answered by the response with the same `id`, so replies may arrive in any order; a request never answered is left to `timeoutMs`. Anything that isn't a well-formed `StorageResponse` is ignored, since a real shared worker's port is reachable by any same-origin script. `dispose()` calls `close()` on the port when it has one.
