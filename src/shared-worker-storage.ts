@@ -102,7 +102,9 @@ export interface SharedWorkerStorage extends AsyncStorage {
    * taken when `SharedWorker` is missing or refuses to be constructed. Fixed for
    * the life of the storage: a worker that fails *after* construction leaves
    * this `"shared-worker"`, and is reported through
-   * {@link CreateSharedWorkerStorageOptions.onError} instead.
+   * {@link CreateSharedWorkerStorageOptions.onError} instead. A storage built
+   * from an already-aborted signal opens no transport either, and names the one
+   * it would have used.
    */
   readonly mode: "shared-worker" | "noop";
   /**
@@ -176,8 +178,9 @@ export interface CreateSharedWorkerStorageOptions {
    * Tear the storage down when this signal aborts — reject any in-flight
    * requests and detach the port, exactly as calling `dispose()` would. Lets
    * callers that only hold the persister (e.g. via `createSharedWorkerPersister`)
-   * still bound its lifetime. If the signal is already aborted, the storage is
-   * disposed immediately.
+   * still bound its lifetime. A signal that has already aborted is honoured
+   * before anything is set up: no worker is constructed for a storage that is
+   * over before it began, and the one handed back is already disposed.
    */
   signal?: AbortSignal | undefined;
   /**
@@ -282,23 +285,36 @@ export function createSharedWorkerStorage(
   // than one that only surfaces in environments that have a SharedWorker.
   validateTimeoutMs(timeoutMs);
 
+  // A signal that aborted before this call asks for a storage that is over
+  // before it begins. Nothing is set up for one: no worker is constructed only
+  // to be closed again, and nothing is reported about an environment the caller
+  // has already stopped caring about. What comes back is what a `dispose()`
+  // straight after construction leaves behind.
+  const abortedUpFront = options.signal?.aborted === true;
+
   if (!options.port && !isSharedWorkerSupported()) {
-    report(
-      options,
-      "warn",
-      new SharedWorkerStorageError(
-        "unsupported",
-        "SharedWorker is unavailable in this environment; falling back to no-op " +
-          "storage. The query cache will not be persisted or shared across tabs. " +
-          "Use isSharedWorkerSupported() to branch beforehand.",
-      ),
-    );
+    // Worth saying only for a storage that is going to be used. The fallback is
+    // still what an aborted caller gets, so `mode` still reports it.
+    if (!abortedUpFront) {
+      report(
+        options,
+        "warn",
+        new SharedWorkerStorageError(
+          "unsupported",
+          "SharedWorker is unavailable in this environment; falling back to no-op " +
+            "storage. The query cache will not be persisted or shared across tabs. " +
+            "Use isSharedWorkerSupported() to branch beforehand.",
+        ),
+      );
+    }
     return createNoopStorage();
   }
 
   const pending = new Map<number, Pending>();
   let nextId = 1;
-  let disposed = false;
+  // An already-aborted signal starts the storage in the state `dispose()` would
+  // leave it in, which is also what keeps a transport from being opened below.
+  let disposed = abortedUpFront;
   let closed = false;
   // Set once the transport is beyond recovery; every later request rejects with it.
   let fatalError: SharedWorkerStorageError | undefined;
@@ -315,6 +331,8 @@ export function createSharedWorkerStorage(
   function closePort() {
     if (closed) return;
     closed = true;
+    // A storage disposed before it opened a port has nothing to detach.
+    if (!port) return;
     port.onmessage = null;
     port.onmessageerror = null;
     port.close?.();
@@ -345,54 +363,61 @@ export function createSharedWorkerStorage(
     report(options, "error", error);
   }
 
-  const connection =
-    options.port ?? connectSharedWorker(options, (error) => handleTransportError(error, true));
+  // A storage that is already disposed has nothing to say and nowhere to say
+  // it, so no worker is constructed and an injected port is left as it was
+  // found — never started, never closed, still the caller's to use.
+  const port = abortedUpFront
+    ? undefined
+    : (options.port ?? connectSharedWorker(options, (error) => handleTransportError(error, true)));
 
   // Constructing the worker can fail outright rather than failing later through
   // `onerror`; there is no transport to set up in that case, so degrade to the
-  // same no-op storage an unsupported environment gets. Past this point the port
-  // is known to exist, which is what the closures above assume.
-  if (!connection) return createNoopStorage();
-  const port: PortAdapter = connection;
+  // same no-op storage an unsupported environment gets. The other way to reach
+  // here without a port is the aborted signal above, which keeps its storage.
+  if (!port && !abortedUpFront) return createNoopStorage();
 
-  port.onmessage = (event: MessageEvent<unknown>) => {
-    const message = event.data;
-    // The worker is shared by `(scriptURL, name)`, so any same-origin script can
-    // open the same port and post to it. Only messages shaped like our responses
-    // are allowed to settle a pending request; everything else is not ours.
-    if (!isStorageResponse(message)) return;
-    const entry = pending.get(message.id);
-    if (!entry) return; // already timed out, or a stray message — ignore
-    pending.delete(message.id);
-    if (entry.timer !== undefined) clearTimeout(entry.timer);
-    if (message.ok) {
-      // The envelope alone doesn't say which result shape is legal - that
-      // follows from the request. Checking it against the operation we sent
-      // keeps a reply from resolving `getItem` with an array, or `entries` with
-      // a bare string, in a caller that has no reason to expect either.
-      if (matchesOperation(entry.op, message.result)) entry.resolve(message.result);
-      else {
-        entry.reject(
-          new SharedWorkerStorageError(
-            "protocol",
-            `SharedWorker returned an unexpected ${entry.op} result`,
-          ),
-        );
+  // Only a storage that has a port has anything to listen to or start.
+  if (port) {
+    port.onmessage = (event: MessageEvent<unknown>) => {
+      const message = event.data;
+      // The worker is shared by `(scriptURL, name)`, so any same-origin script
+      // can open the same port and post to it. Only messages shaped like our
+      // responses are allowed to settle a pending request; everything else is
+      // not ours.
+      if (!isStorageResponse(message)) return;
+      const entry = pending.get(message.id);
+      if (!entry) return; // already timed out, or a stray message — ignore
+      pending.delete(message.id);
+      if (entry.timer !== undefined) clearTimeout(entry.timer);
+      if (message.ok) {
+        // The envelope alone doesn't say which result shape is legal - that
+        // follows from the request. Checking it against the operation we sent
+        // keeps a reply from resolving `getItem` with an array, or `entries`
+        // with a bare string, in a caller that has no reason to expect either.
+        if (matchesOperation(entry.op, message.result)) entry.resolve(message.result);
+        else {
+          entry.reject(
+            new SharedWorkerStorageError(
+              "protocol",
+              `SharedWorker returned an unexpected ${entry.op} result`,
+            ),
+          );
+        }
+      } else {
+        entry.reject(new SharedWorkerStorageError("protocol", message.error));
       }
-    } else {
-      entry.reject(new SharedWorkerStorageError("protocol", message.error));
-    }
-  };
-  port.onmessageerror = () => {
-    handleTransportError(
-      new SharedWorkerStorageError(
-        "transport",
-        "SharedWorker sent a message that could not be deserialized",
-      ),
-      false,
-    );
-  };
-  port.start?.();
+    };
+    port.onmessageerror = () => {
+      handleTransportError(
+        new SharedWorkerStorageError(
+          "transport",
+          "SharedWorker sent a message that could not be deserialized",
+        ),
+        false,
+      );
+    };
+    port.start?.();
+  }
 
   /**
    * Post one request and resolve with its response. The caller supplies a
@@ -408,7 +433,10 @@ export function createSharedWorkerStorage(
     // fast instead. Writes reject rather than resolve, so one that never reached
     // the worker is surfaced to `createAsyncStoragePersister`'s `retry` hook;
     // `read` converts the same rejection into an empty result for reads.
-    if (disposed) return Promise.reject(disposedError());
+    // A missing port says the same thing as `disposed`, since the only storage
+    // built without one is the storage that was disposed before it opened one;
+    // checking it here is also what leaves something to post to below.
+    if (disposed || !port) return Promise.reject(disposedError());
     // Likewise once the worker has failed: there is no port left to answer, so
     // hand back the transport error that explains why rather than a timeout that
     // doesn't.
@@ -546,14 +574,14 @@ export function createSharedWorkerStorage(
   // removes the listener: the signal may outlive many storages — one
   // long-lived controller shared by a component that remounts, say — and each
   // listener left on it pins the storage it closes over.
-  if (options.signal) {
+  //
+  // A signal that had already aborted needs no listener at all: the storage was
+  // built disposed, and a second abort would have nothing left to tear down.
+  if (options.signal && !abortedUpFront) {
     const signal = options.signal;
-    if (signal.aborted) dispose();
-    else {
-      const onAbort = () => dispose();
-      signal.addEventListener("abort", onAbort, { once: true });
-      detachAbortListener = () => signal.removeEventListener("abort", onAbort);
-    }
+    const onAbort = () => dispose();
+    signal.addEventListener("abort", onAbort, { once: true });
+    detachAbortListener = () => signal.removeEventListener("abort", onAbort);
   }
 
   return storage;

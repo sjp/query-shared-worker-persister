@@ -257,7 +257,7 @@ For a connection whose life is one block — a test, a script — declare it wit
 
 Your `tsconfig` needs no extra `lib` entry for any of this. The package's declarations pull in `esnext.disposable` themselves, so they type check against a plain `lib: ["ES2022", "DOM"]` even with `skipLibCheck` off.
 
-When the lifetime is already governed by an `AbortSignal`, pass it instead and disposal follows the abort — an already-aborted signal disposes immediately:
+When the lifetime is already governed by an `AbortSignal`, pass it instead and disposal follows the abort. A signal that has already aborted is honoured before anything is built: no worker is constructed, and what comes back is a storage that is already disposed.
 
 ```typescript
 const controller = new AbortController();
@@ -368,7 +368,7 @@ Returns a `SharedWorkerStorage`: an `AsyncStorage` the shared worker backs, usab
 | `timeoutMs` | `number`                                    | `10000` | Give up on a pending request after this many milliseconds. Greater than `0` and at most `2147483647`, or `Infinity` for no timeout; anything else throws a `RangeError`. See [Request timeout](#request-timeout). |
 | `namespace` | `string`                                    | —       | Appended to the worker's name, so apps shipping the same worker asset get a worker each.                                                                                                                          |
 | `workerUrl` | `string \| URL`                             | —       | The worker's script URL, replacing the packaged `cache.worker.js`; see [Bundler requirements](#bundler-requirements).                                                                                             |
-| `signal`    | `AbortSignal`                               | —       | Calls `dispose()` when aborted; an already-aborted signal disposes immediately.                                                                                                                                   |
+| `signal`    | `AbortSignal`                               | —       | Calls `dispose()` when aborted; a signal that has already aborted skips construction entirely and yields a disposed storage.                                                                                      |
 | `port`      | `PortAdapter`                               | —       | Carry the protocol over a port you supply instead of constructing a worker; see [Supplying your own port](#supplying-your-own-port).                                                                              |
 | `onError`   | `(error: SharedWorkerStorageError) => void` | console | Receives every warning and error instead of the console; see [Diagnostics](#diagnostics).                                                                                                                         |
 

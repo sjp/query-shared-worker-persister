@@ -256,11 +256,59 @@ describe("createSharedWorkerStorage", () => {
     await expect(inflight).rejects.toThrow(/disposed/);
   });
 
-  it("disposes immediately when given an already-aborted signal", () => {
+  it("never takes up its port when given an already-aborted signal", async () => {
+    const reported: SharedWorkerStorageError[] = [];
     const port = createFakePort();
-    createSharedWorkerStorage({ port, signal: AbortSignal.abort() });
-    // Disposal detaches the port handler, so no responses are ever processed.
+    const storage = createSharedWorkerStorage({
+      port,
+      signal: AbortSignal.abort(),
+      onError: (error) => void reported.push(error),
+    });
+
+    // The port was never taken up: no handler was installed on it, so nothing
+    // it says is ever processed and it is still the caller's to use. Nothing is
+    // reported either, for a storage nobody asked to keep.
     expect(port.onmessage).toBeNull();
+    expect(reported).toEqual([]);
+    // In every other way it is the storage a `dispose()` on the next line would
+    // have left: writes reject, reads resolve empty, disposal has nothing to do.
+    expect(storage.mode).toBe("shared-worker");
+    expect((await rejectionFrom(() => storage.setItem("k", "v"))).code).toBe("disposed");
+    await expect(storage.getItem("k")).resolves.toBeNull();
+    await expect(storage.entries()).resolves.toEqual([]);
+    expect(() => {
+      storage.dispose();
+    }).not.toThrow();
+  });
+
+  it("constructs no SharedWorker when the signal has already aborted", async () => {
+    const reported: SharedWorkerStorageError[] = [];
+    const worker = fakeSharedWorker();
+    await withSharedWorker(worker.FakeSharedWorker, async () => {
+      const storage = createSharedWorkerStorage({
+        signal: AbortSignal.abort(),
+        onError: (error) => void reported.push(error),
+      });
+      // No worker process is spawned, and no connection opened, for a storage
+      // that is over before it begins.
+      expect(worker.constructions).toEqual([]);
+      expect(reported).toEqual([]);
+      expect((await rejectionFrom(() => storage.setItem("k", "v"))).code).toBe("disposed");
+    });
+  });
+
+  it("says nothing about an environment it was aborted out of", async () => {
+    const reported: SharedWorkerStorageError[] = [];
+    await withSharedWorker(undefined, () => {
+      const storage = createSharedWorkerStorage({
+        signal: AbortSignal.abort(),
+        onError: (error) => void reported.push(error),
+      });
+      // The no-op fallback is still all there was to give, and `mode` still says
+      // so; there is just nobody left to warn about it.
+      expect(storage.mode).toBe("noop");
+      expect(reported).toEqual([]);
+    });
   });
 
   it("detaches its abort listener when disposed by hand", () => {

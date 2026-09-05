@@ -71,6 +71,12 @@ history, so they summarise the visible behaviour rather than every change.
 - `timeoutMs: Infinity` means no timeout: the request waits for the worker's answer indefinitely
   and is otherwise settled only by a transport failure or by disposal. It previously overflowed
   the timer's 32-bit delay and timed every request out at once.
+- A `signal` that has already aborted is now honoured before anything is built: no `SharedWorker`
+  is constructed, an injected `port` is left untouched, and nothing is reported about the
+  environment. The storage handed back is the one an immediate `dispose()` would have left —
+  writes reject with `disposed`, reads resolve empty — and `mode` still names the transport it
+  would have used. It previously connected a worker, installed the port handlers and started the
+  port, only to tear all of that down again.
 
 ### Fixed
 
