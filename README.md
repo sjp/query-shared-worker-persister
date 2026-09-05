@@ -140,6 +140,16 @@ const persister = createSharedWorkerPersister({ signal: controller.signal });
 controller.abort();
 ```
 
+### Request timeout
+
+Every read and write waits for the worker to answer and rejects after 10 seconds. Pass `timeoutMs` to change that — raise it if the worker starts slowly on your pages (a heavy first paint, or a throttled background tab), lower it if you would rather give up on the cache quickly and let the network serve the first render:
+
+```typescript
+const persister = createSharedWorkerPersister({ timeoutMs: 2_000 });
+```
+
+The same option is available on `createSharedWorkerStorage` if you are wiring the storage up yourself.
+
 ## Recommendations
 
 To get the most out of this package and ensure optimal performance, consider the following recommendations:

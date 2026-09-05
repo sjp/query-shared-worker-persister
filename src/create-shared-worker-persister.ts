@@ -5,6 +5,13 @@ import { createSharedWorkerStorage } from "./shared-worker-storage";
 type AsyncStoragePersisterOptions = Parameters<typeof createAsyncStoragePersister>[0];
 export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptions, "storage"> & {
   /**
+   * Reject a request to the SharedWorker after this many ms. Default 10s. Worth
+   * raising on slow or heavily throttled pages and lowering when you would
+   * rather fall back to the network quickly. See
+   * {@link createSharedWorkerStorage}'s `timeoutMs`.
+   */
+  timeoutMs?: number;
+  /**
    * Isolate this app's cache in its own SharedWorker process instead of sharing
    * the per-origin default. See {@link createSharedWorkerStorage}'s `namespace`.
    */
@@ -23,7 +30,7 @@ export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptio
  * `PersistQueryClientProvider`'s `persistOptions.persister`.
  */
 export function createSharedWorkerPersister(options: CreateSharedWorkerPersisterOptions = {}) {
-  const { namespace, signal, ...persisterOptions } = options;
-  const storage = createSharedWorkerStorage({ namespace, signal });
+  const { timeoutMs, namespace, signal, ...persisterOptions } = options;
+  const storage = createSharedWorkerStorage({ timeoutMs, namespace, signal });
   return createAsyncStoragePersister({ throttleTime: 1_000, ...persisterOptions, storage });
 }
