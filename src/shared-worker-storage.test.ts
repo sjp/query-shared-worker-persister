@@ -291,6 +291,41 @@ describe("no-op fallback when SharedWorker is unavailable", () => {
   });
 });
 
+describe("the worker script URL", () => {
+  /** Records the script URL every construction asks for; the port never answers. */
+  function recordingSharedWorker() {
+    const urls: (string | URL)[] = [];
+    class RecordingSharedWorker {
+      port: PortAdapter = { onmessage: null, postMessage() {} };
+      onerror: ((event: { message: string }) => void) | null = null;
+
+      constructor(url: string | URL) {
+        urls.push(url);
+      }
+    }
+    return { RecordingSharedWorker, urls };
+  }
+
+  it("defaults to the cache.worker.js published beside this module", async () => {
+    const { RecordingSharedWorker, urls } = recordingSharedWorker();
+    await withSharedWorker(RecordingSharedWorker, () => {
+      createSharedWorkerStorage().dispose();
+    });
+    // Resolved against this module's own URL, which is what the consumer's
+    // bundler has to trace in order to copy the asset into its output.
+    expect(urls).toEqual([new URL("./cache.worker.js", import.meta.url)]);
+  });
+
+  it("uses workerUrl instead when one is given", async () => {
+    const { RecordingSharedWorker, urls } = recordingSharedWorker();
+    await withSharedWorker(RecordingSharedWorker, () => {
+      createSharedWorkerStorage({ workerUrl: "/static/cache.worker.js" }).dispose();
+      createSharedWorkerStorage({ workerUrl: new URL("https://example.test/w.js") }).dispose();
+    });
+    expect(urls).toEqual(["/static/cache.worker.js", new URL("https://example.test/w.js")]);
+  });
+});
+
 /**
  * A `SharedWorker` stand-in whose port never replies, so the only thing that can
  * settle a request is the storage itself. `fail()` fires `onerror` the way the

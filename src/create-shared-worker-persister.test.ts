@@ -13,20 +13,23 @@ function persistedClient(): PersistedClient {
 /**
  * A `SharedWorker` stand-in whose port answers from `store` — or, when `dead`,
  * never replies at all, so nothing but the storage's own timeout (or disposal)
- * can settle a request. `names` collects the worker name each construction asked
- * for, which is how `namespace` forwarding is observed.
+ * can settle a request. `names` and `urls` collect the worker identity each
+ * construction asked for, which is how `namespace` and `workerUrl` forwarding is
+ * observed.
  */
 function fakeSharedWorker({ store = new CacheStore(), dead = false } = {}) {
   const names: (string | undefined)[] = [];
+  const urls: (string | URL)[] = [];
   class FakeSharedWorker {
     port: PortAdapter = dead ? { onmessage: null, postMessage() {} } : createFakePort(store);
     onerror: ((event: { message: string }) => void) | null = null;
 
-    constructor(_url: URL, options?: { name?: string }) {
+    constructor(url: string | URL, options?: { name?: string }) {
       names.push(options?.name);
+      urls.push(url);
     }
   }
-  return { FakeSharedWorker, names, store };
+  return { FakeSharedWorker, names, urls, store };
 }
 
 describe("createSharedWorkerPersister", () => {
@@ -66,6 +69,14 @@ describe("createSharedWorkerPersister", () => {
     const [sharedName, namespacedName] = names;
     expect(sharedName).toBeTruthy();
     expect(namespacedName).toBe(`${sharedName}:MY_APP`);
+  });
+
+  it("forwards workerUrl as the worker's script URL", async () => {
+    const { FakeSharedWorker, urls } = fakeSharedWorker();
+    await withSharedWorker(FakeSharedWorker, () => {
+      createSharedWorkerPersister({ workerUrl: "/static/cache.worker.js" });
+    });
+    expect(urls).toEqual(["/static/cache.worker.js"]);
   });
 
   it("forwards signal so aborting tears the storage down", async () => {

@@ -43,6 +43,43 @@ The recommended cross-tab broadcasting plugin is a separate, optional install:
 npm install @tanstack/query-broadcast-client-experimental
 ```
 
+### Bundler requirements
+
+The worker ships as a second file, `dist/cache.worker.js`, and the bundle loads it with
+
+```javascript
+new SharedWorker(new URL("./cache.worker.js", import.meta.url), { type: "module" });
+```
+
+Your bundler has to recognise that pattern _inside a dependency in `node_modules`_, copy the file into your output, and rewrite the URL to point at the copy. Vite and webpack 5 do this, as do bundlers built on the same convention (Rspack, Parcel 2). Plain esbuild, older bundlers, and serving the package straight from `node_modules` with no build step do not: the URL then resolves to something that isn't there.
+
+Two more constraints on the emitted file:
+
+- **It must be served from the same origin as your page.** A cross-origin worker script cannot be loaded at all, and sharing is per-origin anyway, so a copy on a separate asset domain gets you nothing. If your build uploads assets to a CDN on another origin, use `workerUrl` below to point at a same-origin copy.
+- **Its URL is half the worker's identity.** Tabs share a store only while they load the worker from the same URL and under the same name — see [Which tabs share a worker](#which-tabs-share-a-worker).
+
+Worth checking in both your dev server and a production build: dependencies are resolved differently in each, so the asset can be emitted correctly by one and not the other.
+
+If the worker asset isn't there, the browser reports the load failure and the persister treats it as terminal — the error is logged once, and every read and write rejects immediately from then on (see [Browser Support](#browser-support)). Queries still work; nothing is persisted or shared.
+
+#### Hosting the worker yourself
+
+For builds that can't trace the asset, copy `cache.worker.js` into whatever you serve and name it with `workerUrl`:
+
+```typescript
+export const persister = createSharedWorkerPersister({
+  workerUrl: "/static/cache.worker.js",
+});
+```
+
+```shell
+cp node_modules/@sjpnz/query-shared-worker-persister/dist/cache.worker.js public/static/
+```
+
+The package also exports the subpath `@sjpnz/query-shared-worker-persister/cache.worker.js`, so a copy step that resolves rather than hard-codes a path — `import.meta.resolve("@sjpnz/query-shared-worker-persister/cache.worker.js")`, or a bundler plugin doing the same — keeps working if the published layout changes.
+
+It is an ES module and must be served as JavaScript. Every app that should share a store has to pass the same `workerUrl`, and changing it between deployments starts a fresh, empty worker — the same trade-off a content-hashed asset URL brings; [How sharing works](#how-sharing-works) covers what that means for open tabs.
+
 ### Configuration
 
 Follow these steps to configure `QueryClient` persistence. The examples build on each other, and use React; a similar approach applies to other frameworks.
@@ -175,6 +212,8 @@ Treat it accordingly: don't persist anything you would not put in `localStorage`
 
 This package relies on [`SharedWorker`](https://developer.mozilla.org/en-US/docs/Web/API/SharedWorker), which is available in modern desktop browsers but **not** in some environments such as Chrome on Android and certain in-app webviews.
 
+The worker is a module worker (`{ type: "module" }`), which browsers gained separately from — and later than — `SharedWorker` itself. Any browser current enough to matter has both, but a browser with `SharedWorker` and no module-worker support fails to start the worker rather than falling back, and is handled as a load failure below.
+
 When `SharedWorker` is unavailable, the persister degrades gracefully to a no-op storage: TanStack Query keeps working with its normal in-memory cache, just without cross-tab persistence. A single warning is logged to the console so the fallback is visible during development.
 
 The same fallback covers a `SharedWorker` that exists but refuses to be constructed — an opaque-origin document (a sandboxed iframe without `allow-same-origin`, or a `blob:`, `data:` or `file:` page), or a privacy mode or enterprise policy that disables workers. `isSharedWorkerSupported()` only reports that the API is present, so it returns `true` in those environments; construction is attempted, the error is logged as a warning, and you get the no-op storage rather than a throw at startup.
@@ -233,6 +272,7 @@ Every `createAsyncStoragePersister` option except `storage` is forwarded untouch
 | `retry`        | `AsyncPersistRetryer`                                             | —                             | Called when a save fails, to shrink the client and try again.                                                                                       |
 | `namespace`    | `string`                                                          | —                             | Give this app a worker, and therefore a store, of its own; see [Which tabs share a worker](#which-tabs-share-a-worker).                             |
 | `timeoutMs`    | `number`                                                          | `10000`                       | How long a read or write waits for the worker before rejecting; see [Request timeout](#request-timeout).                                            |
+| `workerUrl`    | `string \| URL`                                                   | —                             | Load the worker from a copy you host, for builds that can't emit the packaged asset; see [Bundler requirements](#bundler-requirements).             |
 | `signal`       | `AbortSignal`                                                     | —                             | Disposes the underlying storage when aborted.                                                                                                       |
 
 The persister hides the storage it creates, so `signal` is the only way to tear the connection down — see [Disposal](#disposal).
@@ -241,12 +281,13 @@ The persister hides the storage it creates, so `signal` is the only way to tear 
 
 Returns a `SharedWorkerStorage`: an `AsyncStorage` the shared worker backs, usable anywhere TanStack takes a storage.
 
-| Option      | Type                        | Default | Purpose                                                                                                        |
-| ----------- | --------------------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
-| `timeoutMs` | `number`                    | `10000` | Reject a pending request after this many milliseconds.                                                         |
-| `namespace` | `string`                    | —       | Appended to the worker's name, so apps shipping the same worker asset get a worker each.                       |
-| `signal`    | `AbortSignal`               | —       | Calls `dispose()` when aborted; an already-aborted signal disposes immediately.                                |
-| `port`      | `MessagePort`-shaped object | —       | A test seam: pipe the protocol through your own port instead of constructing a worker. Not needed in app code. |
+| Option      | Type                        | Default | Purpose                                                                                                               |
+| ----------- | --------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------- |
+| `timeoutMs` | `number`                    | `10000` | Reject a pending request after this many milliseconds.                                                                |
+| `namespace` | `string`                    | —       | Appended to the worker's name, so apps shipping the same worker asset get a worker each.                              |
+| `workerUrl` | `string \| URL`             | —       | The worker's script URL, replacing the packaged `cache.worker.js`; see [Bundler requirements](#bundler-requirements). |
+| `signal`    | `AbortSignal`               | —       | Calls `dispose()` when aborted; an already-aborted signal disposes immediately.                                       |
+| `port`      | `MessagePort`-shaped object | —       | A test seam: pipe the protocol through your own port instead of constructing a worker. Not needed in app code.        |
 
 The returned object:
 

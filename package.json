@@ -24,7 +24,8 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./cache.worker.js": "./dist/cache.worker.js"
   },
   "scripts": {
     "build": "tsc && vp pack",

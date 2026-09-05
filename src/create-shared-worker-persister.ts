@@ -19,6 +19,13 @@ export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptio
    */
   namespace?: string;
   /**
+   * Load the worker from a URL you host yourself, instead of the
+   * `cache.worker.js` published beside this bundle. Only needed when your build
+   * can't copy that asset out of `node_modules`. See
+   * {@link createSharedWorkerStorage}'s `workerUrl`.
+   */
+  workerUrl?: string | URL;
+  /**
    * Dispose the underlying SharedWorker storage when this signal aborts. Since
    * this convenience wrapper hides the storage's `dispose()`, the signal is the
    * way to bound its lifetime. See {@link createSharedWorkerStorage}'s `signal`.
@@ -32,7 +39,7 @@ export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptio
  * `PersistQueryClientProvider`'s `persistOptions.persister`.
  */
 export function createSharedWorkerPersister(options: CreateSharedWorkerPersisterOptions = {}) {
-  const { timeoutMs, namespace, signal, ...persisterOptions } = options;
-  const storage = createSharedWorkerStorage({ timeoutMs, namespace, signal });
+  const { timeoutMs, namespace, workerUrl, signal, ...persisterOptions } = options;
+  const storage = createSharedWorkerStorage({ timeoutMs, namespace, workerUrl, signal });
   return createAsyncStoragePersister({ throttleTime: 1_000, ...persisterOptions, storage });
 }

@@ -51,6 +51,21 @@ export interface CreateSharedWorkerStorageOptions {
    */
   namespace?: string;
   /**
+   * Load the worker from this URL instead of the `dist/cache.worker.js` that
+   * ships beside the bundle. The default reference is written as
+   * `new URL("./cache.worker.js", import.meta.url)`, which every modern bundler
+   * has to recognise inside a dependency in order to copy the asset into the
+   * output; point this at a copy you host yourself when your build doesn't. The
+   * URL must be same-origin — a cross-origin worker script can't be loaded, so
+   * nothing would be shared.
+   *
+   * The URL is also half of the worker's identity, the other half being `name`,
+   * so tabs share a store only while they agree on it: pass the same value in
+   * every app that should share, and keep it stable across deployments you want
+   * the cache to survive.
+   */
+  workerUrl?: string | URL;
+  /**
    * Tear the storage down when this signal aborts — reject any in-flight
    * requests and detach the port, exactly as calling `dispose()` would. Lets
    * callers that only hold the persister (e.g. via `createSharedWorkerPersister`)
@@ -106,7 +121,8 @@ export function isSharedWorkerSupported(): boolean {
  * {@link isSharedWorkerSupported} to detect and branch before reaching this.
  *
  * If the worker fails to start — most often because its asset URL didn't resolve
- * in the consumer's bundle — the failure is permanent: the error is logged once,
+ * in the consumer's bundle, which `workerUrl` exists to work around — the failure
+ * is permanent: the error is logged once,
  * the port is closed, and every request from then on rejects with that same
  * error straight away rather than waiting out `timeoutMs`. A single
  * undeserializable response is treated as the lesser fault it is: the in-flight
@@ -173,8 +189,7 @@ export function createSharedWorkerStorage(
   }
 
   const connection =
-    options.port ??
-    connectSharedWorker(options.namespace, (error) => handleTransportError(error, true));
+    options.port ?? connectSharedWorker(options, (error) => handleTransportError(error, true));
 
   // Constructing the worker can fail outright rather than failing later through
   // `onerror`; there is no transport to set up in that case, so degrade to the
@@ -343,13 +358,14 @@ const WORKER_NAME = "TANSTACK_QUERY_SHARED_CACHE_WORKER";
  * would throw a raw `ReferenceError`.
  *
  * `onError` is invoked if the worker itself fails *after* construction (most
- * commonly because its asset URL didn't resolve in the consumer's bundle) so the
+ * commonly because its asset URL didn't resolve in the consumer's bundle, which
+ * `workerUrl` overrides) so the
  * storage can fail pending requests fast instead of waiting for each to time
  * out. That failure is unrecoverable — there is no worker to reconnect to — so
  * callers are expected to treat it as terminal.
  */
 function connectSharedWorker(
-  namespace?: string,
+  options: CreateSharedWorkerStorageOptions,
   onError?: (error: Error) => void,
 ): PortAdapter | undefined {
   // This package builds with `vp pack` (tsdown), which ships `cache.worker.ts`
@@ -365,9 +381,13 @@ function connectSharedWorker(
   // so tabs share a worker only while they load the asset from the same URL. A
   // deployment that changes it — a content hash, typically — gives new tabs a
   // fresh, empty worker while already-open tabs keep talking to the old one.
+  //
+  // A build that can't do that tracing is what `workerUrl` is for: it names a
+  // copy the consumer hosts themselves, and the resolution below is skipped.
+  const { namespace, workerUrl } = options;
   let worker: SharedWorker;
   try {
-    worker = new SharedWorker(new URL("./cache.worker.js", import.meta.url), {
+    worker = new SharedWorker(workerUrl ?? new URL("./cache.worker.js", import.meta.url), {
       type: "module",
       name: namespace ? `${WORKER_NAME}:${namespace}` : WORKER_NAME,
     });
