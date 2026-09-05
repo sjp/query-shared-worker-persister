@@ -614,6 +614,83 @@ describe("when the SharedWorker itself fails", () => {
   });
 });
 
+describe("when the port refuses the message", () => {
+  /**
+   * A port whose `postMessage` throws, as a real `MessagePort` does for a value
+   * that cannot be structured-cloned.
+   */
+  function createRefusingPort(cause: unknown): PortAdapter {
+    return {
+      onmessage: null,
+      postMessage() {
+        throw cause;
+      },
+    };
+  }
+
+  /** What a real port throws for an unclonable value. */
+  function cloneError() {
+    return new DOMException("a function could not be cloned", "DataCloneError");
+  }
+
+  it("rejects a write as a transport failure, keeping the refusal as the cause", async () => {
+    const cause = cloneError();
+    const storage = createSharedWorkerStorage({ port: createRefusingPort(cause) });
+    const error = await rejectionFrom(() => storage.setItem("k", "v"));
+    expect(error.code).toBe("transport");
+    expect(error.message).toContain("a function could not be cloned");
+    expect(error.cause).toBe(cause);
+    storage.dispose();
+  });
+
+  it("leaves no timer scheduled for a request that never left the tab", async () => {
+    vi.useFakeTimers();
+    try {
+      const storage = createSharedWorkerStorage({
+        port: createRefusingPort(cloneError()),
+        // Long enough that a surviving timer would still be scheduled here.
+        timeoutMs: 60_000,
+      });
+      await expect(storage.setItem("k", "v")).rejects.toThrow(/Could not post a request/);
+      expect(vi.getTimerCount()).toBe(0);
+      // The pending entry is gone with it, so this has nothing left to settle.
+      expect(() => storage.dispose()).not.toThrow();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resolves a read empty and reports it once, under transport", async () => {
+    const reported: SharedWorkerStorageError[] = [];
+    const storage = createSharedWorkerStorage({
+      port: createRefusingPort(cloneError()),
+      onError: (error) => void reported.push(error),
+    });
+    await expect(storage.getItem("k")).resolves.toBeNull();
+    storage.dispose();
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.code).toBe("transport");
+    expect((reported[0]?.cause as SharedWorkerStorageError | undefined)?.code).toBe("transport");
+  });
+
+  it("leaves the port usable, since one value it refused condemns nothing", async () => {
+    const port = createFakePort();
+    const send = port.postMessage.bind(port);
+    let refuse = true;
+    port.postMessage = (request: StorageRequest) => {
+      if (refuse) throw cloneError();
+      send(request);
+    };
+    const storage = createSharedWorkerStorage({ port });
+    await expect(storage.setItem("k", "v")).rejects.toThrow(/Could not post a request/);
+    refuse = false;
+    await storage.setItem("k", "v");
+    await expect(storage.getItem("k")).resolves.toBe("v");
+    storage.dispose();
+  });
+});
+
 describe("per-query persistence", () => {
   /**
    * `experimental_createQueryPersister` stores one key per query hash and needs

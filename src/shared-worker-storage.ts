@@ -433,7 +433,28 @@ export function createSharedWorkerStorage(
               );
             }, timeoutMs);
       pending.set(id, { op: message.op, resolve, reject, timer });
-      port.postMessage(message);
+      // A port can refuse the message itself — a real `MessagePort` throws when
+      // a value cannot be structured-cloned. The throw would otherwise escape
+      // the executor and reject this promise while leaving the timer scheduled
+      // and the entry in `pending`, so a request that never left the tab would
+      // still be settled a second time at its deadline. Unwind it here instead,
+      // and reject with the same error shape the rest of the transport uses so
+      // a caller branching on `code` — or a read turning the failure into an
+      // empty result — sees no special case.
+      try {
+        port.postMessage(message);
+      } catch (cause) {
+        pending.delete(id);
+        if (timer !== undefined) clearTimeout(timer);
+        reject(
+          new SharedWorkerStorageError(
+            "transport",
+            "Could not post a request to the SharedWorker " +
+              `(${cause instanceof Error ? cause.message : String(cause)})`,
+            { cause },
+          ),
+        );
+      }
     });
   }
 

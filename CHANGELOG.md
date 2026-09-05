@@ -75,6 +75,11 @@ history, so they summarise the visible behaviour rather than every change.
 - The published declarations reference the `esnext.disposable` lib, so the `[Symbol.dispose]()`
   members no longer fail to compile in projects whose `lib` stops at `ES2022`..`ES2024` and that
   check dependency types with `skipLibCheck: false`.
+- A port that refuses to send a request — a real `MessagePort` throws for a value it cannot
+  clone — now fails that one request as a `SharedWorkerStorageError` with a `code` of
+  `"transport"` and the refusal as its `cause`, and leaves nothing behind. It previously
+  rejected with the raw error and kept both the timeout timer and the request's bookkeeping
+  entry, so a request that never left the tab was settled a second time at its deadline.
 
 ## [0.2.0] - 2026-06-03
 
