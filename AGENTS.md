@@ -79,6 +79,23 @@ off a real `npm pack` tarball, so run `build` first. `attw` runs under its `esm-
 because the package ships ESM only and expects a bundler, so its CommonJS and Node 10
 resolution complaints are reported but do not fail the run. CI runs this after `build`.
 
+## Node versions
+
+Four places name a Node version, and they have to move together:
+
+1. `engines.node` in `package.json`, the floor this repository claims to build and test on,
+2. the `node-version` matrix in `.github/workflows/ci.yml`, whose lowest entry is what that
+   claim is actually tested against,
+3. `node-version` in `.github/workflows/release.yml`, the version the published tarball is
+   built on, which must be within the range, and
+4. the Node feature version in `.devcontainer/devcontainer.json`, what a contributor gets.
+
+The floor is `>=24` because 24 is the oldest version CI runs `check`, `build`, `check:package`
+and `test` on. Lowering `engines` without adding that version to the matrix would be a claim
+with nothing behind it; raising the matrix minimum without raising `engines` leaves the floor
+untested. The published code runs in the browser, so this range only decides who can work on
+the repository and what `npm install` warns about.
+
 ## Tests
 
 `vp test` runs two suites. The Node suite is the bulk of it: it drives the client and the

@@ -86,6 +86,9 @@ history, so they summarise the visible behaviour rather than every change.
   writes reject with `disposed`, reads resolve empty — and `mode` still names the transport it
   would have used. It previously connected a worker, installed the port handlers and started the
   port, only to tear all of that down again.
+- The supported Node range is now `>=24`, raised from `>=20`. It only governs who can build and
+  test this repository — the published code runs in the browser — and 24 is the oldest version
+  the toolchain and the test suites are actually run on. Node 20 reached end of life in April 2026.
 
 ### Fixed
 
