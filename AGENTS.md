@@ -95,8 +95,9 @@ response at all.
 
 The browser suite (`src/**/*.browser.test.ts`) runs in headless Chromium through Vitest's
 Playwright provider and covers only what a fake port cannot show — one worker process behind
-two connections, and the `(scriptURL, name)` pair that decides which tabs share a store. It
-loads the package from `dist/`, so the packaging contract is covered too: `npm run build`
+two connections, the `(scriptURL, name)` pair that decides which tabs share a store, what the
+browser does with a worker script that doesn't load, and a worker reached through `workerUrl`.
+It loads the package from `dist/`, so the packaging contract is covered too: `npm run build`
 first, or the suite fails saying so. Install the browser once with `npm run playwright:install`.
 
 ## Upgrading Vite+

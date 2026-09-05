@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-import type { SharedWorkerStorage } from "./shared-worker-storage";
+import type { SharedWorkerStorage, SharedWorkerStorageError } from "./shared-worker-storage";
 
 /**
  * The one suite that runs against a genuine `SharedWorker` in a real browser.
@@ -16,10 +16,22 @@ import type { SharedWorkerStorage } from "./shared-worker-storage";
  * step has to keep emitting that sibling file and leave the reference alone. A
  * change to the entry list, the module format, or the worker's name would pass
  * every Node test and fail here.
+ *
+ * The same goes for the two failure-shaped things a fake port has no way to
+ * reproduce: what a browser does with a worker script it cannot load, and
+ * whether a copy of that script served from somewhere else is a working worker.
+ * Both are covered below against the real thing.
  */
 
 /** Where the built bundle lives, relative to this file. */
 const BUNDLE_PATH = "../dist/index.js";
+
+/**
+ * Where the built worker asset lives, relative to this file. The bundle reaches
+ * it on its own; naming it again here is what the `workerUrl` tests need, since
+ * their whole point is to load it from a URL the bundle did not choose.
+ */
+const WORKER_PATH = "../dist/cache.worker.js";
 
 /**
  * The built bundle's exports. Imported by URL at runtime, not by specifier,
@@ -51,6 +63,22 @@ let keySeq = 0;
 function uniqueKey(name: string) {
   keySeq += 1;
   return `${name}-${String(keySeq)}`;
+}
+
+/** A recorder for `onError`, and the list it appends to. */
+function recorder() {
+  const reported: SharedWorkerStorageError[] = [];
+  return { reported, onError: (error: SharedWorkerStorageError) => void reported.push(error) };
+}
+
+/** Await a call that must reject, and hand back the error it rejected with. */
+async function rejectionFrom(call: () => unknown): Promise<SharedWorkerStorageError> {
+  const error = await Promise.resolve(call()).then(
+    () => undefined,
+    (reason: unknown) => reason,
+  );
+  expect(error).toBeInstanceOf(bundle.SharedWorkerStorageError);
+  return error as SharedWorkerStorageError;
 }
 
 beforeAll(async () => {
@@ -146,5 +174,82 @@ describe("a real SharedWorker", () => {
     await expect(second.getItem(key)).resolves.toBe("v");
     await second.setItem(key, "still writable");
     await expect(second.getItem(key)).resolves.toBe("still writable");
+  });
+});
+
+describe("a worker whose script cannot be loaded", () => {
+  it("fails every request straight away and reports the failure once", async () => {
+    const { reported, onError } = recorder();
+    const storage = open({
+      workerUrl: "/definitely-missing/cache.worker.js",
+      // Far above the test timeout, so nothing below can settle by timing out:
+      // every assertion here is about the load failure itself. Chromium builds
+      // the SharedWorker without complaint and only fires `error` once it has
+      // failed to fetch the script, a few milliseconds later and after the
+      // first request has already been posted — so the write is one of the
+      // in-flight requests that failure rejects, not one refused up front.
+      timeoutMs: 30_000,
+      onError,
+    });
+
+    const error = await rejectionFrom(() => storage.setItem(uniqueKey("missing"), "v"));
+
+    expect(error.code).toBe("transport");
+    // The worker is gone for good, so a later read doesn't wait for a worker
+    // that will never answer — and resolving it empty isn't reported a second
+    // time, since the failure behind it was already reported.
+    await expect(storage.getItem(uniqueKey("missing"))).resolves.toBeNull();
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.code).toBe("transport");
+  });
+});
+
+describe("a worker hosted at an explicit workerUrl", () => {
+  /**
+   * The built asset under a URL of the caller's choosing. The bundle's own
+   * reference already resolves to this file, so the query string is what makes
+   * these a different worker from the default one: a connection that quietly
+   * ignored `workerUrl` would land on the default worker and be caught by the
+   * separation the last test asserts, rather than pass unnoticed.
+   */
+  function hostedAt(copy: string) {
+    return new URL(`${WORKER_PATH}?${copy}`, import.meta.url).href;
+  }
+
+  it("round-trips through a copy served from another URL", async () => {
+    const key = uniqueKey("hosted");
+    const { reported, onError } = recorder();
+    const storage = open({ workerUrl: hostedAt("hosted-copy"), onError });
+
+    await storage.setItem(key, "v");
+
+    await expect(storage.getItem(key)).resolves.toBe("v");
+    expect(reported).toEqual([]);
+  });
+
+  it("gives two connections to the same workerUrl one store", async () => {
+    const key = uniqueKey("hosted-shared");
+    const writer = open({ workerUrl: hostedAt("hosted-copy") });
+    const reader = open({ workerUrl: hostedAt("hosted-copy") });
+
+    await writer.setItem(key, "written through the hosted copy");
+
+    await expect(reader.getItem(key)).resolves.toBe("written through the hosted copy");
+  });
+
+  it("keeps two URLs for the same worker file on separate stores", async () => {
+    const key = uniqueKey("by-url");
+    const first = open({ workerUrl: hostedAt("one-copy") });
+    const second = open({ workerUrl: hostedAt("another-copy") });
+    await first.setItem(key, "only behind the first URL");
+
+    await expect(second.getItem(key)).resolves.toBeNull();
+
+    // ...and the second URL is a worker of its own, not one whose reads merely
+    // resolve empty. This is what a deployment that changes the asset's URL
+    // does to tabs that are already open: nothing is shared across the change.
+    await second.setItem(key, "only behind the second URL");
+    await expect(second.getItem(key)).resolves.toBe("only behind the second URL");
+    await expect(first.getItem(key)).resolves.toBe("only behind the first URL");
   });
 });
