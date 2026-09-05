@@ -9,6 +9,12 @@ export default defineConfig({
     jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],
     rules: { "vite-plus/prefer-vite-plus-imports": "error" },
     options: { typeAware: true, typeCheck: true },
+    // `scripts/check-types-consumer` imports `dist/`, which does not exist until
+    // `build` has run, so type checking it here would make `vp check` depend on a
+    // build artifact and fail on a fresh clone. It has its own tsconfig and its own
+    // script, `check:types-consumer`, which CI runs after `build`; that is where it
+    // is checked. Formatting still covers it, because `fmt` reads no types.
+    ignorePatterns: ["scripts/check-types-consumer/**"],
   },
   // Library packaging is handled by `vp pack` (tsdown). The worker is listed as
   // its own entry so it is emitted as a sibling `dist/cache.worker.js`, which the

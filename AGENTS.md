@@ -79,6 +79,20 @@ off a real `npm pack` tarball, so run `build` first. `attw` runs under its `esm-
 because the package ships ESM only and expects a bundler, so its CommonJS and Node 10
 resolution complaints are reported but do not fail the run. CI runs this after `build`.
 
+`npm run check:types-consumer` type checks `scripts/check-types-consumer/consumer.ts`, a
+stand-in consumer that imports `dist/` under the narrow `lib` a typical app has and with
+`skipLibCheck: false`. It is what proves the `esnext.disposable` reference `vp pack` banners
+onto the declarations is doing its job: drop the banner and this fails, while everything else
+still passes. Because it reads `dist/`, it only means anything after `build`, which is where
+CI runs it.
+
+That import is also why `lint.ignorePatterns` in `vite.config.ts` keeps
+`scripts/check-types-consumer` out of `vp check`. `vp check` type checks each file under its
+nearest `tsconfig.json`, so it would otherwise check this one too — before `build` has run, in
+CI and on a fresh clone alike, and fail on a `dist/` that is not there yet. Formatting still
+covers the directory, because `fmt` reads no types. The file is checked once, by its own
+script, at the point in the run where `dist/` exists.
+
 ## Node versions
 
 Four places name a Node version, and they have to move together:
