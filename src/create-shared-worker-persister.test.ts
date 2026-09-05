@@ -9,7 +9,7 @@ import {
   type CreateSharedWorkerPersisterOptions,
 } from "./create-shared-worker-persister";
 import { SharedWorkerStorageError } from "./shared-worker-storage";
-import { createFakePort, fakeSharedWorker, withSharedWorker } from "./test-utils";
+import { createFakePort, fakeSharedWorker, withDocument, withSharedWorker } from "./test-utils";
 import { CacheStore } from "./worker/store";
 
 /** A minimal client to persist; the persister only ever serializes it. */
@@ -61,11 +61,36 @@ describe("createSharedWorkerPersister", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const reported: SharedWorkerStorageError[] = [];
-      await withSharedWorker(undefined, () => {
-        createSharedWorkerPersister({ onError: (error) => void reported.push(error) });
-      });
+      // A browser without the API, which is the environment the fallback is
+      // worth reporting in.
+      await withDocument({}, () =>
+        withSharedWorker(undefined, () => {
+          createSharedWorkerPersister({ onError: (error) => void reported.push(error) });
+        }),
+      );
       expect(reported.map((error) => error.code)).toEqual(["unsupported"]);
       expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("builds a silent no-op persister where there is no document", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const reported: SharedWorkerStorageError[] = [];
+    try {
+      // Server-side rendering evaluates this module too, and a server never had
+      // a SharedWorker to lose, so the fallback is taken without a word.
+      await withSharedWorker(undefined, async () => {
+        const persister = createSharedWorkerPersister({
+          onError: (error) => void reported.push(error),
+        });
+        expect(persister.mode).toBe("noop");
+        await persister.persistClient(persistedClient());
+        await expect(persister.restoreClient()).resolves.toBeUndefined();
+      });
+      expect(warn).not.toHaveBeenCalled();
+      expect(reported).toEqual([]);
     } finally {
       warn.mockRestore();
     }
@@ -79,10 +104,12 @@ describe("createSharedWorkerPersister", () => {
   });
 
   it("reports mode `noop` when SharedWorker is missing, so nothing is persisted", async () => {
-    await withSharedWorker(undefined, () => {
-      const persister = createSharedWorkerPersister({ onError: () => {} });
-      expect(persister.mode).toBe("noop");
-    });
+    await withDocument({}, () =>
+      withSharedWorker(undefined, () => {
+        const persister = createSharedWorkerPersister({ onError: () => {} });
+        expect(persister.mode).toBe("noop");
+      }),
+    );
   });
 
   it("reports mode `noop` when the SharedWorker constructor refuses", async () => {

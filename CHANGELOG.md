@@ -68,6 +68,11 @@ history, so they summarise the visible behaviour rather than every change.
   rather than hanging until the timeout.
 - An unusable `SharedWorker` constructor (one that throws, as in an opaque-origin document) now
   falls back to the same no-op storage used when the API is missing entirely.
+- The `"unsupported"` fallback is now reported only where a document exists. A server or edge
+  runtime evaluating the module that builds the persister still gets the no-op storage and
+  `mode: "noop"`, but nothing is written to the console and `onError` is not called: a server
+  never had a `SharedWorker` to lose. A browser that lacks the API — Chrome on Android, some
+  webviews — still reports the warning, as does a browser-simulating test environment.
 - Both sides of the port validate incoming messages, so a malformed or unknown message is
   answered with an error instead of resolving as `undefined`.
 - Every optional option on `createSharedWorkerStorage` and `createSharedWorkerPersister` now

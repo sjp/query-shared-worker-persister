@@ -50,6 +50,29 @@ export async function withSharedWorker<T>(value: unknown, fn: () => T | Promise<
   }
 }
 
+/**
+ * Run `fn` with `globalThis.document` forced present/absent, then restore,
+ * handing back whatever `fn` returned.
+ *
+ * The Node suite has no `document`, which is how the client tells a server from
+ * a browser. Wrap a test in this to model a browser — one that may still be
+ * missing `SharedWorker`, which is the environment the no-op fallback is meant
+ * to be visible in.
+ */
+export async function withDocument<T>(value: unknown, fn: () => T | Promise<T>): Promise<T> {
+  const g = globalThis as { document?: unknown };
+  const had = "document" in g;
+  const original = g.document;
+  if (value === undefined) delete g.document;
+  else g.document = value;
+  try {
+    return await fn();
+  } finally {
+    if (had) g.document = original;
+    else delete g.document;
+  }
+}
+
 /** One `new SharedWorker(...)` call, as seen by {@link fakeSharedWorker}. */
 export interface SharedWorkerConstruction {
   url: string | URL;

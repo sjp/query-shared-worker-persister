@@ -205,7 +205,11 @@ export interface CreateSharedWorkerStorageOptions {
    *
    * Each error carries a {@link SharedWorkerStorageError.code} saying which kind
    * of failure it was; the `"unsupported"` one is the report that says the
-   * storage you were handed persists nothing.
+   * storage you were handed persists nothing. That one is raised only where a
+   * `SharedWorker` could have existed: outside a document — on a server or in an
+   * edge runtime, where the module that builds the persister is evaluated too —
+   * the no-op storage is handed back silently, since there is nothing there for
+   * a handler to act on.
    *
    * Purely diagnostic — what is reported here doesn't change how any call
    * settles, and that holds even if this callback throws: the throw is caught
@@ -244,6 +248,21 @@ export function isSharedWorkerSupported(): boolean {
 }
 
 /**
+ * Whether this is a page rather than a server or edge runtime, which is what
+ * decides whether a missing `SharedWorker` is worth saying anything about. A
+ * browser without the API is a fallback the developer should hear about; a
+ * server never had one and never will, so there is nothing there to act on.
+ *
+ * `document` is the test because it is the global a page has and a server-side
+ * runtime does not, and because the browser-simulating test environments
+ * (jsdom, happy-dom) define it — so an application's own tests keep seeing the
+ * report, which is where it is most useful.
+ */
+function isDocumentEnvironment(): boolean {
+  return typeof document !== "undefined";
+}
+
+/**
  * Build a SharedWorker-backed {@link AsyncStorage}. Every storage method
  * round-trips a {@link StorageRequest} to the worker and awaits the response
  * with the matching `id`, so concurrent calls never cross wires.
@@ -252,7 +271,9 @@ export function isSharedWorkerSupported(): boolean {
  * `SharedWorker` is unavailable (e.g. Chrome on Android, some webviews) — or is
  * present but refuses to be constructed, as on an opaque origin — it falls back
  * to a no-op storage — TanStack Query then runs with its normal in-memory cache
- * and no cross-tab persistence — and reports it once. Use
+ * and no cross-tab persistence — and reports it once. Where there is no document
+ * at all, as on a server rendering the page, the same fallback is handed back
+ * without a report: nothing there could have had a worker. Use
  * {@link isSharedWorkerSupported} to detect and branch before reaching this, or
  * read `mode` on the result to see which storage you were given.
  *
@@ -296,9 +317,10 @@ export function createSharedWorkerStorage(
   const abortedUpFront = options.signal?.aborted === true;
 
   if (!options.port && !isSharedWorkerSupported()) {
-    // Worth saying only for a storage that is going to be used. The fallback is
-    // still what an aborted caller gets, so `mode` still reports it.
-    if (!abortedUpFront) {
+    // Worth saying only for a storage that is going to be used, in a place that
+    // could have had a worker. The fallback is still what an aborted caller and
+    // a server get, so `mode` still reports it either way.
+    if (!abortedUpFront && isDocumentEnvironment()) {
       report(
         options,
         "warn",

@@ -217,7 +217,7 @@ This package relies on [`SharedWorker`](https://developer.mozilla.org/en-US/docs
 
 The worker is a module worker (`{ type: "module" }`), which browsers gained separately from — and later than — `SharedWorker` itself. Any browser current enough to matter has both, but a browser with `SharedWorker` and no module-worker support fails to start the worker rather than falling back, and is handled as a load failure below.
 
-When `SharedWorker` is unavailable, the persister degrades gracefully to a no-op storage: TanStack Query keeps working with its normal in-memory cache, just without cross-tab persistence. A single warning is reported so the fallback is visible during development, and `createSharedWorkerStorage` marks the storage it hands back `mode: "noop"`.
+When `SharedWorker` is unavailable, the persister degrades gracefully to a no-op storage: TanStack Query keeps working with its normal in-memory cache, just without cross-tab persistence. In a browser a single warning is reported, so the fallback is visible during development; outside one, where the API was never going to be there, nothing is reported ([server-side rendering](#server-side-rendering)). Either way `createSharedWorkerStorage` marks the storage it hands back `mode: "noop"`.
 
 The same fallback covers a `SharedWorker` that exists but refuses to be constructed — an opaque-origin document (a sandboxed iframe without `allow-same-origin`, or a `blob:`, `data:` or `file:` page), or a privacy mode or enterprise policy that disables workers. `isSharedWorkerSupported()` only reports that the API is present, so it returns `true` in those environments; construction is attempted, the error is reported as a warning, and you get the no-op storage rather than a throw at startup.
 
@@ -236,44 +236,11 @@ const persister = isSharedWorkerSupported() ? createSharedWorkerPersister() : un
 
 ### Server-side rendering
 
-Importing this package on the server is safe. Under a framework that renders on the server — Next.js, Remix, SvelteKit, Nuxt — the module that creates the persister is evaluated there too, and the server has no `SharedWorker`: `isSharedWorkerSupported()` is `false`, both entry points hand back the no-op storage, and the fallback warning above is reported once per call. A persister created at module scope therefore leaves one line in the server log at startup:
+Importing this package on the server is safe, and silent. Under a framework that renders on the server — Next.js, Remix, SvelteKit, Nuxt — the module that creates the persister is evaluated there too, and the server has no `SharedWorker`: `isSharedWorkerSupported()` is `false` and both entry points hand back the no-op storage. Nothing is written to the server log and `onError` is not called, because a server never had a worker to lose and there is nothing to act on; the warning above is for a browser that lacks the API, which is a real fallback to know about. Nothing about server rendering needs to change to use this package, and no `next/dynamic` or `"use client"` gymnastics are needed to keep the logs clean.
 
-```text
-[@sjpnz/query-shared-worker-persister] SharedWorker is unavailable in this environment; falling back to no-op storage. ...
-```
+The server-side persister is inert: every read resolves empty, every write is dropped, nothing throws, and the browser builds its own persister when the same module is evaluated there. Read `mode` if you want to branch on it — it is `"noop"` on the server.
 
-That line is expected rather than a sign of a misconfiguration. The server-side persister is inert: every read resolves empty, every write is dropped, nothing throws, and the browser builds its own persister when the same module is evaluated there. Nothing about server rendering needs to change to use this package.
-
-To keep the server log clean, take the reports with `onError` and drop the one warning the server will always produce:
-
-```typescript
-// query-client.ts
-import { QueryClient } from "@tanstack/react-query";
-import { createSharedWorkerPersister } from "@sjpnz/query-shared-worker-persister";
-
-const isServer = typeof window === "undefined";
-
-export const queryClient = new QueryClient();
-export const persister = createSharedWorkerPersister({
-  onError: (error) => {
-    // The server has no SharedWorker and never will; every other report still matters.
-    if (isServer && error.code === "unsupported") return;
-    console.warn(error.message, { code: error.code, cause: error.cause });
-  },
-});
-```
-
-The alternative is to not create a persister on the server at all, by loading the component that owns it browser-side only — in Next.js, `next/dynamic` with `ssr: false`:
-
-```tsx
-// app/providers.tsx
-import dynamic from "next/dynamic";
-
-// Imports `./persisted-providers`, and with it the persister, only in the browser.
-const PersistedProviders = dynamic(() => import("./persisted-providers"), { ssr: false });
-```
-
-Two things to know before reaching for that. It only helps if nothing rendered on the server imports the module that creates the persister — one server-side import of `query-client.ts` brings the warning back. And a `"use client"` component is still rendered once on the server, so moving the `createSharedWorkerPersister()` call into a `useState` initialiser inside one does not on its own keep it off the server.
+A test environment that simulates a browser (jsdom, happy-dom) defines `document`, so your application's tests do see the warning when `SharedWorker` is missing there. Pass `onError` if you'd rather they didn't.
 
 ### Disposal
 
@@ -350,13 +317,15 @@ Every failure this package raises is a `SharedWorkerStorageError` with a `code`,
 
 | `code`        | What happened                                                                                     | Reported             |
 | ------------- | ------------------------------------------------------------------------------------------------- | -------------------- |
-| `unsupported` | No `SharedWorker`, or the constructor refused; the storage is the no-op one and persists nothing. | Yes                  |
+| `unsupported` | No `SharedWorker`, or the constructor refused; the storage is the no-op one and persists nothing. | In a browser         |
 | `transport`   | The worker failed after construction (terminal), or sent a message that couldn't be deserialized. | Yes                  |
 | `timeout`     | The worker didn't answer within `timeoutMs`.                                                      | If it stopped a read |
 | `protocol`    | The worker answered with an error, or with a result that doesn't fit the request.                 | If it stopped a read |
 | `disposed`    | The call came after `dispose()`, or after the signal aborted.                                     | If it stopped a read |
 
 The same errors reach you as the rejection of a failed write, so a `retry` hook can read `code` too. Reads never reject ([why](#when-a-read-fails)), which is exactly why a failed read is reported: the error that stopped it is the report's `cause`, and the report carries that error's `code`. A write is not reported separately — its rejection already carries the error — and a terminal worker failure is reported once, no matter how many calls follow it. A message that couldn't be deserialized is reported and nothing more: the port stays open, every request in flight settles on its own response, and only the request whose answer was lost falls to its timeout.
+
+The one report that is conditional on the environment is `unsupported`: it is raised in a browser, and skipped where there is no `document` at all, so a server render neither logs nor calls your handler ([server-side rendering](#server-side-rendering)).
 
 `onError` is diagnostic only: it never changes how a call settles, and that holds even when your handler throws. A throw from it is caught and written to the console together with the error it was given, and the read, write or worker failure that reported carries on exactly as it would have — a reporter that is itself broken can't turn a read into a rejection or leave a failed worker half-shut-down.
 

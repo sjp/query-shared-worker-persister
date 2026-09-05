@@ -9,7 +9,7 @@ import {
   type SharedWorkerStorage,
   SharedWorkerStorageError,
 } from "./shared-worker-storage";
-import { createFakePort, fakeSharedWorker, withSharedWorker } from "./test-utils";
+import { createFakePort, fakeSharedWorker, withDocument, withSharedWorker } from "./test-utils";
 import type { StorageRequest, StorageResponse, StorageResult } from "./worker/protocol";
 import { CacheStore } from "./worker/store";
 
@@ -320,16 +320,19 @@ describe("createSharedWorkerStorage", () => {
 
   it("says nothing about an environment it was aborted out of", async () => {
     const reported: SharedWorkerStorageError[] = [];
-    await withSharedWorker(undefined, () => {
-      const storage = createSharedWorkerStorage({
-        signal: AbortSignal.abort(),
-        onError: (error) => void reported.push(error),
-      });
-      // The no-op fallback is still all there was to give, and `mode` still says
-      // so; there is just nobody left to warn about it.
-      expect(storage.mode).toBe("noop");
-      expect(reported).toEqual([]);
-    });
+    // In a browser, so the silence can only come from the abort.
+    await withDocument({}, () =>
+      withSharedWorker(undefined, () => {
+        const storage = createSharedWorkerStorage({
+          signal: AbortSignal.abort(),
+          onError: (error) => void reported.push(error),
+        });
+        // The no-op fallback is still all there was to give, and `mode` still says
+        // so; there is just nobody left to warn about it.
+        expect(storage.mode).toBe("noop");
+        expect(reported).toEqual([]);
+      }),
+    );
   });
 
   it("detaches its abort listener when disposed by hand", () => {
@@ -492,18 +495,43 @@ describe("no-op fallback when SharedWorker is unavailable", () => {
   it("returns a no-op storage (never persists) and warns once", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
+      await withDocument({}, () =>
+        withSharedWorker(undefined, async () => {
+          const storage = createSharedWorkerStorage();
+          await storage.setItem("k", "v");
+          await expect(storage.getItem("k")).resolves.toBeNull();
+          await expect(storage.entries()).resolves.toEqual([]);
+          await storage.removeItem("k");
+          expect(() => storage.dispose()).not.toThrow();
+          // The fallback carries the same disposal surface, so a caller using
+          // `using` or `dispose()` needs no branch on which storage it was given.
+          expect(() => storage[Symbol.dispose]()).not.toThrow();
+          expect(warn).toHaveBeenCalledTimes(1);
+        }),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("says nothing where there is no document, since a server never had a worker", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const reported: SharedWorkerStorageError[] = [];
+    try {
+      // A server or edge runtime evaluating the module that builds the
+      // persister: the fallback is the only thing to give, and there is nothing
+      // for anyone to do about it, so it is handed over in silence.
       await withSharedWorker(undefined, async () => {
-        const storage = createSharedWorkerStorage();
+        const storage = createSharedWorkerStorage({
+          onError: (error) => void reported.push(error),
+        });
+        expect(storage.mode).toBe("noop");
         await storage.setItem("k", "v");
         await expect(storage.getItem("k")).resolves.toBeNull();
-        await expect(storage.entries()).resolves.toEqual([]);
-        await storage.removeItem("k");
-        expect(() => storage.dispose()).not.toThrow();
-        // The fallback carries the same disposal surface, so a caller using
-        // `using` or `dispose()` needs no branch on which storage it was given.
-        expect(() => storage[Symbol.dispose]()).not.toThrow();
-        expect(warn).toHaveBeenCalledTimes(1);
+        storage.dispose();
       });
+      expect(warn).not.toHaveBeenCalled();
+      expect(reported).toEqual([]);
     } finally {
       warn.mockRestore();
     }
@@ -543,13 +571,16 @@ describe("no-op fallback when SharedWorker is unavailable", () => {
   it("does not warn or fall back when a port is injected", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      await withSharedWorker(undefined, async () => {
-        const storage = createSharedWorkerStorage({ port: createFakePort() });
-        await storage.setItem("k", "v");
-        await expect(storage.getItem("k")).resolves.toBe("v");
-        expect(warn).not.toHaveBeenCalled();
-        storage.dispose();
-      });
+      // In a browser, so the silence can only come from the injected port.
+      await withDocument({}, () =>
+        withSharedWorker(undefined, async () => {
+          const storage = createSharedWorkerStorage({ port: createFakePort() });
+          await storage.setItem("k", "v");
+          await expect(storage.getItem("k")).resolves.toBe("v");
+          expect(warn).not.toHaveBeenCalled();
+          storage.dispose();
+        }),
+      );
     } finally {
       warn.mockRestore();
     }
@@ -879,10 +910,12 @@ describe("diagnostics", () => {
   it("reports the unsupported fallback to onError instead of the console", async () => {
     const { reported, onError } = recorder();
     await withSilentConsole(async (spies) => {
-      await withSharedWorker(undefined, () => {
-        const storage = createSharedWorkerStorage({ onError });
-        expect(storage.mode).toBe("noop");
-      });
+      await withDocument({}, () =>
+        withSharedWorker(undefined, () => {
+          const storage = createSharedWorkerStorage({ onError });
+          expect(storage.mode).toBe("noop");
+        }),
+      );
       expect(spies.warn).not.toHaveBeenCalled();
     });
     expect(reported).toHaveLength(1);
@@ -1068,12 +1101,7 @@ describe("diagnostics", () => {
   it("reports mode so a caller can tell a live storage from a no-op one", async () => {
     expect(createSharedWorkerStorage({ port: createFakePort() }).mode).toBe("shared-worker");
     await withSharedWorker(undefined, () => {
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      try {
-        expect(createSharedWorkerStorage().mode).toBe("noop");
-      } finally {
-        warn.mockRestore();
-      }
+      expect(createSharedWorkerStorage().mode).toBe("noop");
     });
   });
 });
@@ -1163,9 +1191,11 @@ describe("an onError handler that throws", () => {
 
   it("does not escape construction of an unsupported storage", async () => {
     await withSpiedConsoleError(async (spy) => {
-      await withSharedWorker(undefined, () => {
-        expect(createSharedWorkerStorage({ onError: throwingOnError }).mode).toBe("noop");
-      });
+      await withDocument({}, () =>
+        withSharedWorker(undefined, () => {
+          expect(createSharedWorkerStorage({ onError: throwingOnError }).mode).toBe("noop");
+        }),
+      );
       expect(spy).toHaveBeenCalledWith(
         expect.stringContaining("onError handler threw"),
         thrown,
