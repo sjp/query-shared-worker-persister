@@ -25,7 +25,7 @@ export interface WorkerPort {
 const PACKAGE_NAME = "@sjpnz/query-shared-worker-persister";
 
 /** The operations a request may name; used to reject anything else up front. */
-const OPERATIONS = new Set<StorageRequest["op"]>(["getItem", "setItem", "removeItem"]);
+const OPERATIONS = new Set<StorageRequest["op"]>(["getItem", "setItem", "removeItem", "entries"]);
 
 /** Narrow an arbitrary value to an object so its fields can be probed safely. */
 function asRecord(data: unknown): Record<string, unknown> | undefined {
@@ -49,6 +49,9 @@ function describeInvalidRequest(data: unknown): string | undefined {
   if (!OPERATIONS.has(message.op as StorageRequest["op"])) {
     return `unknown operation ${JSON.stringify(message.op)}`;
   }
+  // `entries` addresses the whole store, so it is the one operation with no key
+  // to check; requiring one would reject a well-formed request.
+  if (message.op === "entries") return undefined;
   if (typeof message.key !== "string")
     return `key must be a string, received ${typeof message.key}`;
   if (message.op === "setItem" && typeof message.value !== "string") {

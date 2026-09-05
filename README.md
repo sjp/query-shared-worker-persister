@@ -107,6 +107,41 @@ await restored;
 unsubscribe();
 ```
 
+### Per-query persistence
+
+By default the persister serialises the whole dehydrated cache under a single key, so the last tab to write wins and everything another tab had cached is replaced. TanStack's experimental per-query persister avoids that by storing one key per query hash, which suits a shared store much better: two tabs caching different queries add to the same store instead of overwriting each other.
+
+Pass the storage (not the persister) to `experimental_createQueryPersister`:
+
+```typescript
+// query-client.ts
+import { QueryClient } from "@tanstack/react-query";
+import { experimental_createQueryPersister } from "@tanstack/query-persist-client-core";
+import { createSharedWorkerStorage } from "@sjpnz/query-shared-worker-persister";
+
+const storage = createSharedWorkerStorage();
+
+export const queryPersister = experimental_createQueryPersister({
+  storage,
+  // Every key this persister writes starts with `prefix`; give each app its own
+  // so apps sharing the default worker don't restore each other's queries.
+  prefix: "MY_AWESOME_APP",
+  maxAge: 1000 * 60 * 60, // discard anything older on restore
+});
+
+export const queryClient = new QueryClient({
+  defaultOptions: { queries: { persister: queryPersister.persisterFn } },
+});
+```
+
+`persisterFn` only restores a query when that query is actually used, so it fills the cache lazily. To have the shared cache present from the first render — the point of sharing it across tabs — restore everything up front and await it before rendering:
+
+```typescript
+await queryPersister.restoreQueries(queryClient);
+```
+
+Use this _instead of_ `PersistQueryClientProvider` and `createSharedWorkerPersister`, not alongside them; running both persists the same data twice under different keys. Note that this API is marked experimental by TanStack and its shape may change in a minor release.
+
 ## Browser Support
 
 This package relies on [`SharedWorker`](https://developer.mozilla.org/en-US/docs/Web/API/SharedWorker), which is available in modern desktop browsers but **not** in some environments such as Chrome on Android and certain in-app webviews.

@@ -28,6 +28,21 @@ describe("respond", () => {
     expect(store.getItem("k")).toBe("v");
   });
 
+  it("answers an entries request with every stored pair", () => {
+    const store = new CacheStore();
+    store.setItem("a", "1");
+    store.setItem("b", "2");
+    expect(respond(store, { kind: "request", id: 9, op: "entries" })).toEqual({
+      kind: "response",
+      id: 9,
+      ok: true,
+      result: [
+        ["a", "1"],
+        ["b", "2"],
+      ],
+    });
+  });
+
   it("wraps a thrown Error as an ok:false response carrying its message", () => {
     const store = {
       handle: () => {
@@ -82,10 +97,13 @@ describe("handleConnect", () => {
       port.onmessage?.({ data: request } as MessageEvent<StorageRequest>);
     deliver({ kind: "request", id: 1, op: "setItem", key: "k", value: "v" });
     deliver({ kind: "request", id: 2, op: "getItem", key: "k" });
+    // `entries` carries no key, so it also proves validation doesn't demand one.
+    deliver({ kind: "request", id: 3, op: "entries" });
 
     expect(sent).toEqual([
       { kind: "response", id: 1, ok: true, result: null },
       { kind: "response", id: 2, ok: true, result: "v" },
+      { kind: "response", id: 3, ok: true, result: [["k", "v"]] },
     ]);
   });
 

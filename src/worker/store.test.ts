@@ -35,6 +35,39 @@ describe("CacheStore", () => {
     expect(store.getItem("REACT_QUERY_OFFLINE_CACHE")).toBe(blob);
   });
 
+  describe("entries()", () => {
+    it("is empty for a fresh store", () => {
+      expect(new CacheStore().entries()).toEqual([]);
+    });
+
+    it("returns every stored pair", () => {
+      const store = new CacheStore();
+      store.setItem("a", "1");
+      store.setItem("b", "2");
+      expect(store.entries()).toEqual([
+        ["a", "1"],
+        ["b", "2"],
+      ]);
+    });
+
+    it("reflects removals and overwrites", () => {
+      const store = new CacheStore();
+      store.setItem("a", "1");
+      store.setItem("b", "2");
+      store.setItem("a", "updated");
+      store.removeItem("b");
+      expect(store.entries()).toEqual([["a", "updated"]]);
+    });
+
+    it("hands back a snapshot that later writes do not mutate", () => {
+      const store = new CacheStore();
+      store.setItem("a", "1");
+      const snapshot = store.entries();
+      store.setItem("b", "2");
+      expect(snapshot).toEqual([["a", "1"]]);
+    });
+  });
+
   describe("handle()", () => {
     it("maps a getItem request to the stored value", () => {
       const store = new CacheStore();
@@ -55,6 +88,16 @@ describe("CacheStore", () => {
       const result = store.handle({ kind: "request", id: 1, op: "removeItem", key: "k" });
       expect(result).toBeNull();
       expect(store.getItem("k")).toBeNull();
+    });
+
+    it("maps an entries request to every stored pair", () => {
+      const store = new CacheStore();
+      store.setItem("a", "1");
+      store.setItem("b", "2");
+      expect(store.handle({ kind: "request", id: 1, op: "entries" })).toEqual([
+        ["a", "1"],
+        ["b", "2"],
+      ]);
     });
 
     it("throws for an unknown operation instead of returning undefined", () => {

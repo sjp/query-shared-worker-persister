@@ -1,5 +1,10 @@
 import type { AsyncStorage } from "@tanstack/query-persist-client-core";
-import type { StorageRequest, StorageResponse } from "./worker/protocol";
+import type {
+  StorageEntries,
+  StorageRequest,
+  StorageResponse,
+  StorageResult,
+} from "./worker/protocol";
 
 /** The minimal `MessagePort` surface we use — lets tests inject a fake port. */
 export interface PortAdapter {
@@ -14,9 +19,17 @@ export interface PortAdapter {
 
 export interface SharedWorkerStorage extends AsyncStorage {
   /**
+   * Every key/value pair in the shared store, including any written by other
+   * apps sharing the same worker. Always present here (TanStack declares it
+   * optional), so this storage can drive `experimental_createQueryPersister`,
+   * which needs to iterate the store for `restoreQueries`, `persisterGc` and
+   * `removeQueries`.
+   */
+  entries: () => Promise<StorageEntries>;
+  /**
    * Detach the port handler and reject any in-flight requests. Idempotent: a
    * second call does nothing. Once disposed the storage stays disposed, and
-   * every later `getItem`/`setItem`/`removeItem` rejects straight away.
+   * every later call rejects straight away.
    */
   dispose: () => void;
 }
@@ -52,7 +65,9 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
 
 /** A request awaiting its matching response, plus the timer that will reject it. */
 interface Pending {
-  resolve: (value: string | null) => void;
+  /** The operation asked for; fixes which result shape the response may carry. */
+  op: StorageRequest["op"];
+  resolve: (value: StorageResult) => void;
   reject: (reason: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -74,9 +89,9 @@ export function isSharedWorkerSupported(): boolean {
 }
 
 /**
- * Build a SharedWorker-backed {@link AsyncStorage}. All three storage methods
- * round-trip a {@link StorageRequest} to the worker and await the response with
- * the matching `id`, so concurrent calls never cross wires.
+ * Build a SharedWorker-backed {@link AsyncStorage}. Every storage method
+ * round-trips a {@link StorageRequest} to the worker and awaits the response
+ * with the matching `id`, so concurrent calls never cross wires.
  *
  * With no `port` injected this spins up the shared `cache.worker.ts`. When
  * `SharedWorker` is unavailable (e.g. Chrome on Android, some webviews) — or is
@@ -174,7 +189,12 @@ export function createSharedWorkerStorage(
     pending.delete(message.id);
     clearTimeout(entry.timer);
     if (message.ok) {
-      entry.resolve(message.result);
+      // The envelope alone doesn't say which result shape is legal - that
+      // follows from the request. Checking it against the operation we sent
+      // keeps a reply from resolving `getItem` with an array, or `entries` with
+      // a bare string, in a caller that has no reason to expect either.
+      if (matchesOperation(entry.op, message.result)) entry.resolve(message.result);
+      else entry.reject(new Error(`SharedWorker returned an unexpected ${entry.op} result`));
     } else {
       entry.reject(new Error(message.error));
     }
@@ -187,7 +207,7 @@ export function createSharedWorkerStorage(
   };
   port.start?.();
 
-  function request(message: DistributiveOmit<StorageRequest, "id">): Promise<string | null> {
+  function request(message: DistributiveOmit<StorageRequest, "id">): Promise<StorageResult> {
     // Once the port is closed the browser drops `postMessage` silently, so a
     // request issued here would sit in `pending` and only fail at the timeout —
     // a misleading error, ten seconds late, holding a timer the whole way. Fail
@@ -200,18 +220,22 @@ export function createSharedWorkerStorage(
     if (fatalError) return Promise.reject(fatalError);
 
     const id = nextId++;
-    return new Promise<string | null>((resolve, reject) => {
+    return new Promise<StorageResult>((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(new Error(`SharedWorker storage request timed out after ${timeoutMs}ms`));
       }, timeoutMs);
-      pending.set(id, { resolve, reject, timer });
+      pending.set(id, { op: message.op, resolve, reject, timer });
       port.postMessage({ ...message, id } as StorageRequest);
     });
   }
 
+  // Each method narrows the shared result type to the shape its operation is
+  // defined to return. The cast is sound because `request` only resolves a
+  // result that matched the operation it was sent for.
   const storage: SharedWorkerStorage = {
-    getItem: (key) => request({ kind: "request", op: "getItem", key }),
+    getItem: (key) => request({ kind: "request", op: "getItem", key }) as Promise<string | null>,
+    entries: () => request({ kind: "request", op: "entries" }) as Promise<StorageEntries>,
     setItem: async (key, value) => {
       await request({ kind: "request", op: "setItem", key, value });
     },
@@ -250,18 +274,46 @@ function isStorageResponse(data: unknown): data is StorageResponse {
   if (typeof data !== "object" || data === null) return false;
   const message = data as Record<string, unknown>;
   if (message.kind !== "response" || typeof message.id !== "number") return false;
-  if (message.ok === true) return typeof message.result === "string" || message.result === null;
+  if (message.ok === true) return isStorageResult(message.result);
   return message.ok === false && typeof message.error === "string";
 }
 
+/** Whether `value` is one of the result shapes the protocol allows at all. */
+function isStorageResult(value: unknown): value is StorageResult {
+  return typeof value === "string" || value === null || isStorageEntries(value);
+}
+
+/** Whether `value` is an array of `[key, value]` string pairs. */
+function isStorageEntries(value: unknown): value is StorageEntries {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (entry) =>
+        Array.isArray(entry) &&
+        entry.length === 2 &&
+        typeof entry[0] === "string" &&
+        typeof entry[1] === "string",
+    )
+  );
+}
+
+/** Whether `result` is the shape `op` is defined to answer with. */
+function matchesOperation(op: StorageRequest["op"], result: StorageResult): boolean {
+  return op === "entries"
+    ? isStorageEntries(result)
+    : typeof result === "string" || result === null;
+}
+
 /**
- * Storage that quietly does nothing: `getItem` always resolves `null` (so
- * TanStack Query restores nothing and just fetches), and writes are dropped.
+ * Storage that quietly does nothing: `getItem` always resolves `null` and
+ * `entries` an empty array (so TanStack Query restores nothing and just
+ * fetches), and writes are dropped.
  * Returned when `SharedWorker` is unavailable so callers can keep one code path.
  */
 function createNoopStorage(): SharedWorkerStorage {
   return {
     getItem: () => Promise.resolve(null),
+    entries: () => Promise.resolve([]),
     setItem: () => Promise.resolve(),
     removeItem: () => Promise.resolve(),
     dispose: () => {},

@@ -1,3 +1,5 @@
+import { experimental_createQueryPersister } from "@tanstack/query-persist-client-core";
+import { QueryClient } from "@tanstack/query-core";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   createSharedWorkerStorage,
@@ -27,6 +29,40 @@ describe("createSharedWorkerStorage", () => {
     await storage.setItem("k", "v");
     await storage.removeItem("k");
     await expect(storage.getItem("k")).resolves.toBeNull();
+    storage.dispose();
+  });
+
+  it("entries returns every pair held by the worker", async () => {
+    const storage = createSharedWorkerStorage({ port: createFakePort() });
+    await expect(storage.entries()).resolves.toEqual([]);
+    await storage.setItem("a", "1");
+    await storage.setItem("b", "2");
+    await expect(storage.entries()).resolves.toEqual([
+      ["a", "1"],
+      ["b", "2"],
+    ]);
+    await storage.removeItem("a");
+    await expect(storage.entries()).resolves.toEqual([["b", "2"]]);
+    storage.dispose();
+  });
+
+  it("rejects a response whose result is the wrong shape for the request", async () => {
+    // A same-origin sender - or a mismatched build sharing the worker - can
+    // answer with a well-formed envelope carrying the other operation's result.
+    const port: PortAdapter = {
+      onmessage: null,
+      postMessage(request: StorageRequest) {
+        queueMicrotask(() => {
+          const result = request.op === "entries" ? "not-an-array" : [["a", "1"]];
+          port.onmessage?.({
+            data: { kind: "response", id: request.id, ok: true, result },
+          } as MessageEvent<StorageResponse>);
+        });
+      },
+    };
+    const storage = createSharedWorkerStorage({ port, timeoutMs: 60_000 });
+    await expect(storage.getItem("k")).rejects.toThrow(/unexpected getItem result/);
+    await expect(storage.entries()).rejects.toThrow(/unexpected entries result/);
     storage.dispose();
   });
 
@@ -90,6 +126,7 @@ describe("createSharedWorkerStorage", () => {
     await expect(storage.getItem("k")).rejects.toThrow(/disposed/);
     await expect(storage.setItem("k", "v")).rejects.toThrow(/disposed/);
     await expect(storage.removeItem("k")).rejects.toThrow(/disposed/);
+    await expect(storage.entries()).rejects.toThrow(/disposed/);
     expect(postMessage).not.toHaveBeenCalled();
   });
 
@@ -200,6 +237,7 @@ describe("no-op fallback when SharedWorker is unavailable", () => {
         const storage = createSharedWorkerStorage();
         await storage.setItem("k", "v");
         await expect(storage.getItem("k")).resolves.toBeNull();
+        await expect(storage.entries()).resolves.toEqual([]);
         await storage.removeItem("k");
         expect(() => storage.dispose()).not.toThrow();
         expect(warn).toHaveBeenCalledTimes(1);
@@ -226,6 +264,7 @@ describe("no-op fallback when SharedWorker is unavailable", () => {
         }).not.toThrow();
         await storage.setItem("k", "v");
         await expect(storage.getItem("k")).resolves.toBeNull();
+        await expect(storage.entries()).resolves.toEqual([]);
         await storage.removeItem("k");
         expect(() => storage.dispose()).not.toThrow();
         expect(warn).toHaveBeenCalledTimes(1);
@@ -312,6 +351,7 @@ describe("when the SharedWorker itself fails", () => {
       await expect(storage.getItem("k")).rejects.toThrow(/SharedWorker failed/);
       await expect(storage.setItem("k", "v")).rejects.toThrow(/SharedWorker failed/);
       await expect(storage.removeItem("k")).rejects.toThrow(/SharedWorker failed/);
+      await expect(storage.entries()).rejects.toThrow(/SharedWorker failed/);
     });
   });
 
@@ -345,5 +385,56 @@ describe("when the SharedWorker itself fails", () => {
     } finally {
       error.mockRestore();
     }
+  });
+});
+
+describe("per-query persistence", () => {
+  /**
+   * `experimental_createQueryPersister` stores one key per query hash and needs
+   * `entries()` to find them again. Two storages over one `CacheStore` stand in
+   * for two tabs sharing a worker.
+   */
+  it("persists a query under its own key and restores it in another tab", async () => {
+    const store = new CacheStore();
+    const writer = createSharedWorkerStorage({ port: createFakePort(store) });
+
+    const source = new QueryClient();
+    source.setQueryData(["user", 1], { name: "Ada" });
+    const query = source.getQueryCache().find({ queryKey: ["user", 1] });
+    if (!query) throw new Error("the query was not created");
+    await experimental_createQueryPersister({ storage: writer }).persistQuery(query);
+
+    await expect(writer.entries()).resolves.toEqual([
+      [`tanstack-query-${query.queryHash}`, expect.any(String)],
+    ]);
+
+    const reader = createSharedWorkerStorage({ port: createFakePort(store) });
+    const target = new QueryClient();
+    await experimental_createQueryPersister({ storage: reader }).restoreQueries(target);
+    expect(target.getQueryData(["user", 1])).toEqual({ name: "Ada" });
+
+    writer.dispose();
+    reader.dispose();
+  });
+
+  it("leaves the other tab's queries alone when one removes its own", async () => {
+    const store = new CacheStore();
+    const storage = createSharedWorkerStorage({ port: createFakePort(store) });
+    const persister = experimental_createQueryPersister({ storage });
+
+    const client = new QueryClient();
+    client.setQueryData(["user", 1], { name: "Ada" });
+    client.setQueryData(["user", 2], { name: "Grace" });
+    const cache = client.getQueryCache();
+    for (const query of cache.getAll()) await persister.persistQuery(query);
+
+    await persister.removeQueries({ queryKey: ["user", 1], exact: true });
+
+    const restored = new QueryClient();
+    await persister.restoreQueries(restored);
+    expect(restored.getQueryData(["user", 1])).toBeUndefined();
+    expect(restored.getQueryData(["user", 2])).toEqual({ name: "Grace" });
+
+    storage.dispose();
   });
 });
