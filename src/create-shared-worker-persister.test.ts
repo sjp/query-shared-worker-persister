@@ -1,35 +1,14 @@
 import type { PersistedClient } from "@tanstack/query-persist-client-core";
-import { describe, expect, it } from "vite-plus/test";
-import { createSharedWorkerPersister } from "./create-shared-worker-persister";
-import type { PortAdapter } from "./shared-worker-storage";
-import { createFakePort, withSharedWorker } from "./test-utils";
-import { CacheStore } from "./worker/store";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import {
+  createSharedWorkerPersister,
+  type CreateSharedWorkerPersisterOptions,
+} from "./create-shared-worker-persister";
+import { fakeSharedWorker, withSharedWorker } from "./test-utils";
 
 /** A minimal client to persist; the persister only ever serializes it. */
 function persistedClient(): PersistedClient {
   return { timestamp: 0, buster: "", clientState: { mutations: [], queries: [] } };
-}
-
-/**
- * A `SharedWorker` stand-in whose port answers from `store` — or, when `dead`,
- * never replies at all, so nothing but the storage's own timeout (or disposal)
- * can settle a request. `names` and `urls` collect the worker identity each
- * construction asked for, which is how `namespace` and `workerUrl` forwarding is
- * observed.
- */
-function fakeSharedWorker({ store = new CacheStore(), dead = false } = {}) {
-  const names: (string | undefined)[] = [];
-  const urls: (string | URL)[] = [];
-  class FakeSharedWorker {
-    port: PortAdapter = dead ? { onmessage: null, postMessage() {} } : createFakePort(store);
-    onerror: ((event: { message: string }) => void) | null = null;
-
-    constructor(url: string | URL, options?: { name?: string }) {
-      names.push(options?.name);
-      urls.push(url);
-    }
-  }
-  return { FakeSharedWorker, names, urls, store };
 }
 
 describe("createSharedWorkerPersister", () => {
@@ -61,22 +40,24 @@ describe("createSharedWorkerPersister", () => {
   });
 
   it("forwards namespace as a dedicated worker name", async () => {
-    const { FakeSharedWorker, names } = fakeSharedWorker();
+    const { FakeSharedWorker, constructions } = fakeSharedWorker();
     await withSharedWorker(FakeSharedWorker, () => {
       createSharedWorkerPersister();
       createSharedWorkerPersister({ namespace: "MY_APP" });
     });
-    const [sharedName, namespacedName] = names;
-    expect(sharedName).toBeTruthy();
-    expect(namespacedName).toBe(`${sharedName}:MY_APP`);
+    const [shared, namespaced] = constructions;
+    expect(shared?.options?.name).toBeTruthy();
+    expect(namespaced?.options?.name).toBe(`${shared?.options?.name}:MY_APP`);
   });
 
   it("forwards workerUrl as the worker's script URL", async () => {
-    const { FakeSharedWorker, urls } = fakeSharedWorker();
+    const { FakeSharedWorker, constructions } = fakeSharedWorker();
     await withSharedWorker(FakeSharedWorker, () => {
       createSharedWorkerPersister({ workerUrl: "/static/cache.worker.js" });
     });
-    expect(urls).toEqual(["/static/cache.worker.js"]);
+    expect(constructions.map((construction) => construction.url)).toEqual([
+      "/static/cache.worker.js",
+    ]);
   });
 
   it("forwards signal so aborting tears the storage down", async () => {
@@ -87,6 +68,18 @@ describe("createSharedWorkerPersister", () => {
       const restoring = persister.restoreClient();
       controller.abort();
       await expect(restoring).rejects.toThrow(/disposed/);
+    });
+  });
+
+  it("removes the persisted client from the shared store", async () => {
+    const { FakeSharedWorker, store } = fakeSharedWorker();
+    await withSharedWorker(FakeSharedWorker, async () => {
+      const persister = createSharedWorkerPersister({ key: "MY_APP" });
+      await persister.persistClient(persistedClient());
+      expect(store.getItem("MY_APP")).not.toBeNull();
+      await persister.removeClient();
+      expect(store.getItem("MY_APP")).toBeNull();
+      await expect(persister.restoreClient()).resolves.toBeUndefined();
     });
   });
 
@@ -130,5 +123,52 @@ describe("createSharedWorkerPersister", () => {
       expect(errors[0]).toBeInstanceOf(Error);
       expect(String(errors[0])).toMatch(/timed out/);
     });
+  });
+});
+
+/**
+ * Writes are throttled, so a burst of query-cache changes costs one round trip
+ * to the worker rather than one per change. Timers are faked here because the
+ * behaviour under test is entirely about when the second write is allowed
+ * through; the port itself still answers on real microtasks.
+ */
+describe("throttling repeated writes", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Persist twice under one key, and report what the store held in between. */
+  async function persistTwice(options: CreateSharedWorkerPersisterOptions, waitMs: number) {
+    const { FakeSharedWorker, store } = fakeSharedWorker();
+    return await withSharedWorker(FakeSharedWorker, async () => {
+      const persister = createSharedWorkerPersister({
+        ...options,
+        key: "K",
+        serialize: (client) => client.buster,
+      });
+      await persister.persistClient({ ...persistedClient(), buster: "first" });
+      const second = persister.persistClient({ ...persistedClient(), buster: "second" });
+      await vi.advanceTimersByTimeAsync(waitMs);
+      const afterWaiting = store.getItem("K");
+      // Let the throttled write land however long it was held back, so no
+      // pending timer outlives the test.
+      await vi.advanceTimersByTimeAsync(60_000);
+      await second;
+      return { afterWaiting, afterSettling: store.getItem("K") };
+    });
+  }
+
+  it("holds a second write back for a second by default", async () => {
+    const { afterWaiting, afterSettling } = await persistTwice({}, 999);
+    expect(afterWaiting).toBe("first");
+    expect(afterSettling).toBe("second");
+  });
+
+  it("uses the caller's throttleTime instead when one is given", async () => {
+    const { afterWaiting } = await persistTwice({ throttleTime: 50 }, 999);
+    expect(afterWaiting).toBe("second");
   });
 });

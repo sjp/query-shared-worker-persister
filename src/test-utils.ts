@@ -1,3 +1,4 @@
+import { vi } from "vite-plus/test";
 import type { PortAdapter } from "./shared-worker-storage";
 import type { StorageRequest, StorageResponse } from "./worker/protocol";
 import { CacheStore } from "./worker/store";
@@ -32,17 +33,105 @@ export function createFakePort(store = new CacheStore()): PortAdapter {
   return port;
 }
 
-/** Run `fn` with `globalThis.SharedWorker` forced present/absent, then restore. */
-export async function withSharedWorker(value: unknown, fn: () => void | Promise<void>) {
+/**
+ * Run `fn` with `globalThis.SharedWorker` forced present/absent, then restore,
+ * handing back whatever `fn` returned.
+ */
+export async function withSharedWorker<T>(value: unknown, fn: () => T | Promise<T>): Promise<T> {
   const g = globalThis as { SharedWorker?: unknown };
   const had = "SharedWorker" in g;
   const original = g.SharedWorker;
   if (value === undefined) delete g.SharedWorker;
   else g.SharedWorker = value;
   try {
-    await fn();
+    return await fn();
   } finally {
     if (had) g.SharedWorker = original;
     else delete g.SharedWorker;
   }
+}
+
+/** One `new SharedWorker(...)` call, as seen by {@link fakeSharedWorker}. */
+export interface SharedWorkerConstruction {
+  url: string | URL;
+  options: WorkerOptions | undefined;
+}
+
+export interface FakeSharedWorkerOptions {
+  /** The store the fake's port answers from. Share one to model two tabs. */
+  store?: CacheStore;
+  /** Give the port no answers at all, so only the client can settle a request. */
+  dead?: boolean;
+}
+
+/**
+ * A recording `SharedWorker` stand-in to hand to {@link withSharedWorker}, for
+ * the paths that construct a real worker rather than taking an injected port.
+ *
+ * Every construction is recorded in `constructions` — the script URL and the
+ * options object, which together are the worker's identity — and every instance
+ * keeps spies on what the client posted and whether the port was closed. Call
+ * `fail()` on one to fire `onerror` the way the browser does when the worker
+ * script can't be loaded.
+ *
+ * The port answers from `store` exactly as the real worker would, unless `dead`
+ * is set, in which case it never replies and the only thing that can settle a
+ * request is the client's own timeout or disposal.
+ */
+export function fakeSharedWorker({
+  store = new CacheStore(),
+  dead = false,
+}: FakeSharedWorkerOptions = {}) {
+  const constructions: SharedWorkerConstruction[] = [];
+  const instances: FakeSharedWorker[] = [];
+
+  /**
+   * A port that both records what was posted and forwards it to a real
+   * answering port, so a single fake serves the tests that assert on traffic and
+   * those that need genuine responses.
+   */
+  function createRecordingPort(post: (request: StorageRequest) => void, close: () => void) {
+    const answering = dead ? undefined : createFakePort(store);
+    const port: PortAdapter = {
+      onmessage: null,
+      postMessage: (request) => {
+        post(request);
+        answering?.postMessage(request);
+      },
+      close,
+    };
+    // The answering port replies through its own handler, so point that at
+    // whichever handler the client has installed on the port it was given.
+    if (answering) answering.onmessage = (event) => port.onmessage?.(event);
+    return port;
+  }
+
+  class FakeSharedWorker {
+    readonly postMessage = vi.fn<(request: StorageRequest) => void>();
+    readonly close = vi.fn<() => void>();
+    readonly port = createRecordingPort(this.postMessage, this.close);
+    onerror: ((event: { message: string }) => void) | null = null;
+
+    constructor(url: string | URL, options?: WorkerOptions) {
+      constructions.push({ url, options });
+      instances.push(this);
+    }
+
+    /** Report a worker that never started, as `onerror` does in the browser. */
+    fail(message = "boot failed") {
+      this.onerror?.({ message });
+    }
+  }
+
+  return {
+    FakeSharedWorker,
+    constructions,
+    store,
+    /** The most recently constructed worker; fails the test if there is none. */
+    get latest(): FakeSharedWorker {
+      const worker = instances[instances.length - 1];
+      if (!worker) throw new Error("no SharedWorker was constructed");
+      return worker;
+    },
+  };
 }

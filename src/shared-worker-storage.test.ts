@@ -2,13 +2,18 @@ import { experimental_createQueryPersister } from "@tanstack/query-persist-clien
 import { QueryClient } from "@tanstack/query-core";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  type CreateSharedWorkerStorageOptions,
   createSharedWorkerStorage,
   isSharedWorkerSupported,
   type PortAdapter,
+  type SharedWorkerStorage,
 } from "./shared-worker-storage";
-import { createFakePort, withSharedWorker } from "./test-utils";
+import { createFakePort, fakeSharedWorker, withSharedWorker } from "./test-utils";
 import type { StorageRequest, StorageResponse } from "./worker/protocol";
 import { CacheStore } from "./worker/store";
+
+/** The fake worker instance {@link fakeSharedWorker} hands back. */
+type FakeWorker = ReturnType<typeof fakeSharedWorker>["latest"];
 
 describe("createSharedWorkerStorage", () => {
   it("returns null for a missing key", async () => {
@@ -291,80 +296,69 @@ describe("no-op fallback when SharedWorker is unavailable", () => {
   });
 });
 
-describe("the worker script URL", () => {
-  /** Records the script URL every construction asks for; the port never answers. */
-  function recordingSharedWorker() {
-    const urls: (string | URL)[] = [];
-    class RecordingSharedWorker {
-      port: PortAdapter = { onmessage: null, postMessage() {} };
-      onerror: ((event: { message: string }) => void) | null = null;
-
-      constructor(url: string | URL) {
-        urls.push(url);
-      }
-    }
-    return { RecordingSharedWorker, urls };
+describe("the SharedWorker it constructs", () => {
+  /** Construct a storage over a recording fake and hand back what it asked for. */
+  async function constructionFor(options?: CreateSharedWorkerStorageOptions) {
+    const { FakeSharedWorker, constructions } = fakeSharedWorker({ dead: true });
+    await withSharedWorker(FakeSharedWorker, () => {
+      createSharedWorkerStorage(options).dispose();
+    });
+    const construction = constructions[0];
+    if (!construction) throw new Error("no SharedWorker was constructed");
+    return construction;
   }
 
   it("defaults to the cache.worker.js published beside this module", async () => {
-    const { RecordingSharedWorker, urls } = recordingSharedWorker();
-    await withSharedWorker(RecordingSharedWorker, () => {
-      createSharedWorkerStorage().dispose();
-    });
     // Resolved against this module's own URL, which is what the consumer's
     // bundler has to trace in order to copy the asset into its output.
-    expect(urls).toEqual([new URL("./cache.worker.js", import.meta.url)]);
+    const { url } = await constructionFor();
+    expect(url).toEqual(new URL("./cache.worker.js", import.meta.url));
   });
 
   it("uses workerUrl instead when one is given", async () => {
-    const { RecordingSharedWorker, urls } = recordingSharedWorker();
-    await withSharedWorker(RecordingSharedWorker, () => {
-      createSharedWorkerStorage({ workerUrl: "/static/cache.worker.js" }).dispose();
-      createSharedWorkerStorage({ workerUrl: new URL("https://example.test/w.js") }).dispose();
+    await expect(constructionFor({ workerUrl: "/static/cache.worker.js" })).resolves.toMatchObject({
+      url: "/static/cache.worker.js",
     });
-    expect(urls).toEqual(["/static/cache.worker.js", new URL("https://example.test/w.js")]);
+    const absolute = new URL("https://example.test/w.js");
+    await expect(constructionFor({ workerUrl: absolute })).resolves.toMatchObject({
+      url: absolute,
+    });
+  });
+
+  it("loads the worker as a module", async () => {
+    // The worker source imports its store and its connection handling, so it
+    // can only run as a module worker; a classic one would fail to parse.
+    const { options } = await constructionFor();
+    expect(options?.type).toBe("module");
+  });
+
+  it("names the worker so every tab reaches the same one", async () => {
+    // The name is half the worker's identity, so it has to be spelled the same
+    // in every tab, and stay stable across releases - changing it would strand
+    // already-open tabs on a worker that nothing new connects to.
+    const { options } = await constructionFor();
+    expect(options?.name).toBe("TANSTACK_QUERY_SHARED_CACHE_WORKER");
+  });
+
+  it("appends a namespace to that name, giving the app a worker of its own", async () => {
+    const { options } = await constructionFor({ namespace: "MY_APP" });
+    expect(options?.name).toBe("TANSTACK_QUERY_SHARED_CACHE_WORKER:MY_APP");
   });
 });
 
-/**
- * A `SharedWorker` stand-in whose port never replies, so the only thing that can
- * settle a request is the storage itself. `fail()` fires `onerror` the way the
- * browser does when the worker script can't be loaded.
- */
-class FakeSharedWorker {
-  static latest: FakeSharedWorker | undefined;
-  onerror: ((event: { message: string }) => void) | null = null;
-  postMessage = vi.fn();
-  close = vi.fn();
-  port: PortAdapter;
-
-  constructor() {
-    this.port = { onmessage: null, postMessage: this.postMessage, close: this.close };
-    FakeSharedWorker.latest = this;
-  }
-
-  fail(message = "boot failed") {
-    this.onerror?.({ message });
-  }
-}
-
 describe("when the SharedWorker itself fails", () => {
-  /** Build a storage over a fresh {@link FakeSharedWorker} and hand back both. */
+  /** Build a storage over a fresh fake worker and hand back both. */
   async function withFailingWorker(
-    fn: (
-      worker: FakeSharedWorker,
-      storage: ReturnType<typeof createSharedWorkerStorage>,
-    ) => Promise<void>,
+    fn: (worker: FakeWorker, storage: SharedWorkerStorage) => Promise<void>,
   ) {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      await withSharedWorker(FakeSharedWorker, async () => {
+      const worker = fakeSharedWorker({ dead: true });
+      await withSharedWorker(worker.FakeSharedWorker, async () => {
         // Far longer than the test could tolerate, so any rejection that arrives
         // proves it came from the fast path rather than the timer.
         const storage = createSharedWorkerStorage({ timeoutMs: 60_000 });
-        const worker = FakeSharedWorker.latest;
-        if (!worker) throw new Error("no SharedWorker was constructed");
-        await fn(worker, storage);
+        await fn(worker.latest, storage);
         storage.dispose();
       });
     } finally {
@@ -404,9 +398,10 @@ describe("when the SharedWorker itself fails", () => {
   it("logs the failure once however many requests follow", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      await withSharedWorker(FakeSharedWorker, async () => {
+      const worker = fakeSharedWorker({ dead: true });
+      await withSharedWorker(worker.FakeSharedWorker, async () => {
         const storage = createSharedWorkerStorage({ timeoutMs: 60_000 });
-        FakeSharedWorker.latest?.fail();
+        worker.latest.fail();
         await expect(
           Promise.allSettled([
             storage.getItem("a"),
