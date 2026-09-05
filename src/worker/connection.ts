@@ -20,8 +20,10 @@ export interface WorkerPort {
 
 /**
  * Prefixes this file's console output so a log line is traceable to this
- * package. Spelled out again here rather than shared with the client so the
- * worker entry stays a self-contained bundle for consumers to copy.
+ * package. Spelled out again here rather than imported from the client half: a
+ * module both entries import is emitted as a chunk the two of them load, and
+ * the worker entry has to stay one file, because that file is all a consumer's
+ * bundler copies out of the package.
  */
 const PACKAGE_NAME = "@sjpnz/query-shared-worker-persister";
 

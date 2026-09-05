@@ -47,6 +47,12 @@ User-facing behaviour — what the options mean, what consumers have to do — l
 - **`src/cache.worker.ts` stays a `pack.entry` and stays listed in `sideEffects`.** It is the
   asset the URL above resolves to. Dropping the entry stops it being emitted; dropping the
   `sideEffects` entry lets a bundler tree-shake a file whose whole purpose is its side effects.
+- **`dist/cache.worker.js` imports nothing.** That one file is all a consumer's bundler copies
+  out of the package, so anything left beside it does not travel with it. `vp pack` builds both
+  entries together and emits a module they both import as a shared chunk, which is why the
+  worker side keeps its own copy of what it would otherwise share with the client half — the
+  log prefix in `src/worker/connection.ts` — instead of importing it. After a change to the
+  worker's imports, check that `dist/cache.worker.js` still has no `import` statement.
 - **One store per worker process.** `cache.worker.ts` constructs a single `CacheStore` and every
   connection shares it; that, plus the browser terminating the worker when the last tab closes,
   is the entire lifetime model. There is no persistence to disk and no cleanup to write.
