@@ -76,6 +76,10 @@ history, so they summarise the visible behaviour rather than every change.
   out the full timeout.
 - Requests issued after `dispose()` settle immediately — writes reject, reads resolve empty —
   rather than hanging until the timeout.
+- A read that resolved empty only because the storage was disposed is now reported once per
+  storage rather than on every call. The first report still says that a released storage is
+  being read from; repeating it added nothing, and a per-query persister reading on every query
+  mount could fill the console with the same line.
 - An unusable `SharedWorker` constructor (one that throws, as in an opaque-origin document) now
   falls back to the same no-op storage used when the API is missing entirely.
 - The `"unsupported"` fallback is now reported only where a document exists. A server or edge

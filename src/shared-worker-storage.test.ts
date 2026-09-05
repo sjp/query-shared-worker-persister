@@ -471,12 +471,16 @@ describe("a read the worker cannot answer", () => {
     storage.dispose();
   });
 
-  it("resolves empty once the storage is disposed", async () => {
+  it("resolves empty once the storage is disposed, saying so once", async () => {
     // Far longer a timeout than the test could tolerate, so resolving at all
     // proves the answer came from the fast path rather than the timer.
     const storage = createSharedWorkerStorage({ port: createFakePort(), timeoutMs: 60_000 });
     storage.dispose();
-    await expect(readFrom(storage)).resolves.toEqual({ item: null, entries: [], warnings: 2 });
+    // Two reads, one warning: the caller asked for the disposal, so hearing
+    // that a released storage is still being read from is worth saying once
+    // and no more - a persister reads on every query mount.
+    await expect(readFrom(storage)).resolves.toEqual({ item: null, entries: [], warnings: 1 });
+    await expect(readFrom(storage)).resolves.toEqual({ item: null, entries: [], warnings: 0 });
   });
 
   it("leaves writes rejecting, so a failed save still reaches the caller", async () => {
@@ -1145,6 +1149,26 @@ describe("diagnostics", () => {
     // The read that gave up is described, and the failure it gave up on is kept.
     expect(reported[0]?.message).toContain("continuing as though it were empty");
     expect((reported[0]?.cause as SharedWorkerStorageError | undefined)?.code).toBe("timeout");
+  });
+
+  it("reports reads made after disposal once per storage", async () => {
+    const { reported, onError } = recorder();
+    await withSilentConsole(async (spies) => {
+      const storage = createSharedWorkerStorage({ port: createFakePort(), onError });
+      storage.dispose();
+      await expect(storage.getItem("k")).resolves.toBeNull();
+      await expect(storage.entries()).resolves.toEqual([]);
+      expect(spies.warn).not.toHaveBeenCalled();
+
+      // A second storage has its own say: what has been reported already is
+      // remembered per storage, not for the module.
+      const other = createSharedWorkerStorage({ port: createFakePort(), onError });
+      other.dispose();
+      await expect(other.getItem("k")).resolves.toBeNull();
+    });
+    expect(reported.map((error) => error.code)).toEqual(["disposed", "disposed"]);
+    expect(reported[0]?.message).toContain("continuing as though it were empty");
+    expect((reported[0]?.cause as SharedWorkerStorageError | undefined)?.code).toBe("disposed");
   });
 
   it("keeps a worker-side error as the cause of the read that gave up on it", async () => {

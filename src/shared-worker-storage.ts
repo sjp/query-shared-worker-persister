@@ -113,8 +113,9 @@ export interface SharedWorkerStorage extends AsyncStorage {
   /**
    * Detach this storage's handlers and settle any in-flight requests.
    * Idempotent: a second call does nothing. Once disposed the storage stays
-   * disposed: later writes reject straight away, later reads resolve empty, and
-   * a worker that fails afterwards is neither recorded nor reported.
+   * disposed: later writes reject straight away, later reads resolve empty —
+   * the first of them reported, the rest silently — and a worker that fails
+   * afterwards is neither recorded nor reported.
    */
   dispose: () => void;
   /**
@@ -219,7 +220,10 @@ export interface CreateSharedWorkerStorageOptions {
    * and written to the console alongside the error it interrupted, and the call
    * that reported settles exactly as it would have. A failed write isn't
    * reported, since its rejection already carries the error; a failed read is,
-   * because resolving empty hides it.
+   * because resolving empty hides it — except for reads that failed only
+   * because the storage was disposed, where the first is reported and the rest
+   * are not: the caller asked for the disposal, and a persister reading on
+   * every query mount would otherwise repeat the same line indefinitely.
    */
   onError?: ((error: SharedWorkerStorageError) => void) | undefined;
 }
@@ -346,6 +350,8 @@ export function createSharedWorkerStorage(
   let closed = false;
   // Set once the transport is beyond recovery; every later request rejects with it.
   let fatalError: SharedWorkerStorageError | undefined;
+  // Set the first time a read is answered by disposal, so the rest stay quiet.
+  let disposedReadReported = false;
 
   function rejectPending(error: SharedWorkerStorageError) {
     for (const entry of pending.values()) {
@@ -572,11 +578,17 @@ export function createSharedWorkerStorage(
     empty: StorageResult,
   ): Promise<StorageResult> {
     return request(build).catch((error: unknown) => {
+      const disposedRead = error instanceof SharedWorkerStorageError && error.code === "disposed";
       // A fatal transport failure is already reported where it happens, once.
-      // Everything else — a timeout, a worker-side error, a reply that broke
-      // the protocol — is reported here, so a cache that silently stays cold
-      // still says why.
-      if (error !== fatalError) {
+      // Disposal is reported once too: the first read says the one thing worth
+      // hearing — something is still reading a storage the caller released —
+      // and a persister reading on every query mount would otherwise repeat it
+      // for as long as the reference is held. Everything else — a timeout, a
+      // worker-side error, a reply that broke the protocol — is reported on
+      // every read, so a cache that silently stays cold still says why.
+      const alreadyReported = error === fatalError || (disposedRead && disposedReadReported);
+      if (disposedRead) disposedReadReported = true;
+      if (!alreadyReported) {
         const reason = error instanceof Error ? error.message : String(error);
         // Reported under the code of the failure behind it, which is also kept
         // as the `cause`: a caller filtering on `timeout` wants this read too.
