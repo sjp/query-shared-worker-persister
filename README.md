@@ -21,126 +21,168 @@ A simple demo app has been published that demonstrates desired caching behaviour
 
 The source for the react application is available on [GitHub](https://github.com/sjp/query-shared-worker-demo)
 
-## Getting Started
+## Contents
 
-### Installation
+- [Getting started](#getting-started) — install, wire it up, and watch two tabs share a cache
+  - [1. Install the packages](#1-install-the-packages)
+  - [2. Create the query client and the persister](#2-create-the-query-client-and-the-persister)
+  - [3. Keep open tabs in step](#3-keep-open-tabs-in-step)
+  - [4. Render the app behind the provider](#4-render-the-app-behind-the-provider)
+  - [5. See it working](#5-see-it-working)
+  - [Where to go from here](#where-to-go-from-here)
+- [Security considerations](#security-considerations)
+- [Guides](#guides)
+  - [Other frameworks](#other-frameworks)
+  - [Per-query persistence](#per-query-persistence)
+  - [Bundler requirements](#bundler-requirements) · [Hosting the worker yourself](#hosting-the-worker-yourself)
+  - [Browser support](#browser-support) · [Server-side rendering](#server-side-rendering)
+  - [Disposal](#disposal)
+  - [Request timeout](#request-timeout)
+  - [Diagnostics](#diagnostics)
+- [API](#api)
+  - [`createSharedWorkerPersister(options?)`](#createsharedworkerpersisteroptions)
+  - [`createSharedWorkerStorage(options?)`](#createsharedworkerstorageoptions) · [Supplying your own port](#supplying-your-own-port)
+  - [`isSharedWorkerSupported()`](#issharedworkersupported)
+  - [Types](#types)
+- [How sharing works](#how-sharing-works)
+  - [Which tabs share a worker](#which-tabs-share-a-worker)
+  - [When a read fails](#when-a-read-fails)
 
-Install the package in your project using `npm`, alongside Tanstack Query's persistence package for React:
+## Getting started
+
+This walkthrough goes from an empty project to two tabs sharing one query cache. Each step builds on the one before it, and the code is React; only [step 4](#4-render-the-app-behind-the-provider) differs elsewhere, and [Other frameworks](#other-frameworks) covers what to do instead.
+
+### 1. Install the packages
+
+Install this package alongside TanStack Query's persistence packages for React:
 
 ```shell
 npm install @sjpnz/query-shared-worker-persister @tanstack/react-query-persist-client @tanstack/query-async-storage-persister
 ```
 
-`@tanstack/query-async-storage-persister` and `@tanstack/query-persist-client-core` are peer dependencies: this
-package's public types are expressed in terms of them, so your project supplies the single copy that has to match
-your TanStack Query version. `@tanstack/react-query-persist-client` already brings in
-`@tanstack/query-persist-client-core`, and npm installs missing peers automatically, so the command above is usually
-all that is needed.
+TanStack Query 5.80.5 or newer is required. That is the first release whose persistence packages carry the per-query persister API this package's `entries()` is written for, including `restoreQueries`.
 
-TanStack Query 5.80.5 or newer is required. That is the first release whose persistence packages carry the
-per-query persister API this package's `entries()` is written for, including `restoreQueries`.
+`@tanstack/query-async-storage-persister` and `@tanstack/query-persist-client-core` are peer dependencies: this package's public types are expressed in terms of them, so your project supplies the single copy that has to match your TanStack Query version. `@tanstack/react-query-persist-client` already brings in `@tanstack/query-persist-client-core`, and npm installs missing peers automatically, so the command above is usually all that is needed.
 
-The recommended cross-tab broadcasting plugin is a separate, optional install:
+### 2. Create the query client and the persister
+
+Both belong in a module the rest of the app imports, so there is one of each:
+
+```typescript
+// query-client.ts
+import { QueryClient } from "@tanstack/react-query";
+import { createSharedWorkerPersister } from "@sjpnz/query-shared-worker-persister";
+
+// A name of your own, so this app's cache doesn't collide with another on the same origin.
+const APP_NAME = "MY_AWESOME_APP";
+
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 1000 * 60 * 5, // 5 minutes
+    },
+  },
+});
+
+export const persister = createSharedWorkerPersister({ key: APP_NAME });
+```
+
+Two things there are worth pausing on.
+
+`staleTime` decides whether any of this pays off. It defaults to `0`, which makes every query stale the moment it mounts: the restored cache is replaced by a network response before anyone sees it, and nothing is served from the shared cache at all. Set it to however long your data can be allowed to go without a refetch — five minutes is a reasonable place to start. TanStack's [important defaults](https://tanstack.com/query/latest/docs/framework/react/guides/important-defaults) and [React Query as a state manager](https://tkdodo.eu/blog/react-query-as-a-state-manager) both go further into this.
+
+`key` names the entry the whole dehydrated cache is written to. Applications that serve the same worker asset share one store, so a `key` of your own keeps this app out of another's data. To have a store of your own rather than an entry in a shared one, pass `namespace: APP_NAME` as well — it gives this application a worker to itself; see [Which tabs share a worker](#which-tabs-share-a-worker).
+
+### 3. Keep open tabs in step
+
+The persister writes one serialised cache under its `key` and reads it back only once, at startup. That is enough for a new tab to start warm, but not enough to stop two open tabs from overwriting each other's saves. [`broadcastQueryClient`](https://tanstack.com/query/latest/docs/framework/react/plugins/broadcastQueryClient) mirrors cache updates between tabs over a `BroadcastChannel`, so their in-memory caches stay in step and they write near-identical values instead of clobbering each other. Treat it as part of the setup rather than optional polish, and read [How sharing works](#how-sharing-works) before deciding to go without it.
+
+It is a separate, optional install:
 
 ```shell
 npm install @tanstack/query-broadcast-client-experimental
 ```
 
-### Bundler requirements
-
-The worker ships as a second file, `dist/cache.worker.js`, and the bundle loads it with
-
-```javascript
-new SharedWorker(new URL("./cache.worker.js", import.meta.url), { type: "module" });
-```
-
-Your bundler has to recognise that pattern _inside a dependency in `node_modules`_, copy the file into your output, and rewrite the URL to point at the copy. Vite and webpack 5 do this, as do bundlers built on the same convention (Rspack, Parcel 2). Plain esbuild, older bundlers, and serving the package straight from `node_modules` with no build step do not: the URL then resolves to something that isn't there.
-
-Two more constraints on the emitted file:
-
-- **It must be served from the same origin as your page.** A cross-origin worker script cannot be loaded at all, and sharing is per-origin anyway, so a copy on a separate asset domain gets you nothing. If your build uploads assets to a CDN on another origin, use `workerUrl` below to point at a same-origin copy.
-- **Its URL is half the worker's identity.** Tabs share a store only while they load the worker from the same URL and under the same name — see [Which tabs share a worker](#which-tabs-share-a-worker).
-
-Worth checking in both your dev server and a production build: dependencies are resolved differently in each, so the asset can be emitted correctly by one and not the other.
-
-If the worker asset isn't there, the browser reports the load failure and the persister treats it as terminal — the error is logged once, and every request from then on fails immediately rather than waiting out its timeout (see [Browser Support](#browser-support)). Queries still work; nothing is persisted or shared.
-
-#### Hosting the worker yourself
-
-For builds that can't trace the asset, copy `cache.worker.js` into whatever you serve and name it with `workerUrl`:
+The plugin is framework-agnostic and, in TanStack's own terms, experimental — its API may change in a minor release. Point it at the same name and `query-client.ts` is finished:
 
 ```typescript
-export const persister = createSharedWorkerPersister({
-  workerUrl: "/static/cache.worker.js",
+// query-client.ts
+import { QueryClient } from "@tanstack/react-query";
+import { broadcastQueryClient } from "@tanstack/query-broadcast-client-experimental";
+import { createSharedWorkerPersister } from "@sjpnz/query-shared-worker-persister";
+
+const APP_NAME = "MY_AWESOME_APP";
+
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 1000 * 60 * 5, // 5 minutes
+    },
+  },
 });
+
+export const persister = createSharedWorkerPersister({ key: APP_NAME });
+
+broadcastQueryClient({ queryClient, broadcastChannel: APP_NAME });
 ```
 
-```shell
-cp node_modules/@sjpnz/query-shared-worker-persister/dist/cache.worker.js public/static/
+### 4. Render the app behind the provider
+
+[`PersistQueryClientProvider`](https://tanstack.com/query/latest/docs/framework/react/plugins/persistQueryClient#persistqueryclientprovider) takes the persister through `persistOptions` and holds off rendering its children until the cache has been restored, so the first render already sees what another tab left behind:
+
+```tsx
+// App.tsx
+import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
+import { persister, queryClient } from "./query-client";
+
+const APP_VERSION = "MY_AWESOME_APP_v1.2.3";
+
+const persistOptions = { persister, buster: APP_VERSION };
+
+export default function App() {
+  return (
+    <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions}>
+      <h1>Hello, world!</h1>
+      {/* Your app components */}
+    </PersistQueryClientProvider>
+  );
+}
 ```
 
-The package also exports the subpath `@sjpnz/query-shared-worker-persister/cache.worker.js`, so a copy step that resolves rather than hard-codes a path — `import.meta.resolve("@sjpnz/query-shared-worker-persister/cache.worker.js")`, or a bundler plugin doing the same — keeps working if the published layout changes.
+`buster` is your application's version, and a cache stamped with a different one is thrown away rather than restored into a build that may no longer understand its shape — which is what you want when a tab on an older version is still open beside a newly deployed one. Change it with the deployments that change what you cache, and leave it alone for the ones that don't: a mismatch clears the shared entry for every connected tab, not only the one that noticed it. [How sharing works](#how-sharing-works) has the details.
 
-The URL must be on the page's own origin. One that resolves to another origin is refused with a `TypeError` when the storage or persister is created: a cross-origin worker script cannot be loaded, and a store is shared per origin in any case, so a copy on an asset domain would share nothing even if it did load. A same-origin URL the browser refuses for its own reasons is reported as a warning naming that URL, and you get the no-op storage; a URL it accepts but nothing is served at fails to load, which is the terminal failure described above.
+### 5. See it working
 
-It is an ES module and must be served as JavaScript. Every app that should share a store has to pass the same `workerUrl`, and changing it between deployments starts a fresh, empty worker — the same trade-off a content-hashed asset URL brings; [How sharing works](#how-sharing-works) covers what that means for open tabs.
+Start the app, open it in one tab, then open a second. The second tab should render its data without going to the network for it, because the first tab's cache reached it through the worker before its first render. TanStack's devtools, or the network panel filtered to a request you expect not to see, both show this happening.
 
-Changing it is also the only way to get new worker code running while tabs are still open, because a worker keeps the script the first tab to connect loaded and tabs opening later attach to it as it is ([Which tabs share a worker](#which-tabs-share-a-worker)). So if you take the copy step above and later update this package, name the file for the version you copied — `/static/cache.worker.1.2.3.js` — and accept the empty store that comes with the new URL. A path you keep fixed forever is the trade in the other direction: the cache survives every deployment, and the worker code turns over only once every tab has closed.
+If the second tab fetches anyway, these are the usual reasons, in the order worth checking:
 
-### Configuration
+- **`persister.mode` is `"noop"`.** No worker was built, and nothing is being persisted or shared. Usually the browser has no `SharedWorker` — see [Browser support](#browser-support).
+- **The console reports that the worker failed to load.** The worker asset didn't reach your build's output, so its URL 404s. [Bundler requirements](#bundler-requirements) covers which bundlers emit it and what to do when yours doesn't.
+- **Nothing is reported and `mode` is `"shared-worker"`.** The cache is being shared and the queries are refetching on top of it, which is what a `staleTime` of `0` does. Check that the client from step 2 is the one the app is rendering with.
 
-Follow these steps to configure `QueryClient` persistence. The examples build on each other, and use React; a similar approach applies to other frameworks.
+Try a production build as well as the dev server. Dependencies are resolved differently in each, so the worker asset can be emitted correctly by one and not the other.
 
-1. Create a `QueryClient` and `SharedWorker` persister in a module your app can import, for example `query-client.ts`:
+### Where to go from here
 
-   ```typescript
-   // query-client.ts
-   import { QueryClient } from "@tanstack/react-query";
-   import { createSharedWorkerPersister } from "@sjpnz/query-shared-worker-persister";
+- [Per-query persistence](#per-query-persistence) stores an entry per query rather than one for the whole cache, which suits a shared store better than the default does.
+- [Security considerations](#security-considerations) is worth reading before the cache holds an access token.
+- [How sharing works](#how-sharing-works) sets out what the shared store does and doesn't synchronise.
+- [Diagnostics](#diagnostics) sends this package's warnings somewhere other than the console.
 
-   export const queryClient = new QueryClient();
-   export const persister = createSharedWorkerPersister();
-   ```
+## Security considerations
 
-   Set a `staleTime` on this client before you go any further — with the default of `0` every query refetches immediately on mount and nothing is served from the shared cache. See [Configure `staleTime` for your queries](#recommendations) below.
+The shared store is readable by any script on the origin. Nothing about the worker restricts an entry to the application that wrote it: same-origin code can open the same worker with `new SharedWorker(sameUrl, { name: "TANSTACK_QUERY_SHARED_CACHE_WORKER:MY_APP" })` and read every key in it, `namespace` or not. `namespace` is a collision guard, not an access boundary — the protection you get is `localStorage`'s, a store scoped to an origin rather than a private one.
 
-2. (Recommended) Use a [`broadcastQueryClient`](https://tanstack.com/query/latest/docs/framework/react/plugins/broadcastQueryClient):
+Treat it accordingly: don't persist anything you would not put in `localStorage`. Access tokens are the headline use case for this package and are a reasonable fit wherever you would already accept them in `localStorage`, but that is a decision worth making deliberately rather than inheriting from the example. To keep particular queries out of the shared store, exclude them with TanStack's `shouldDehydrateQuery`, or strip them in the persister's `serialize` hook.
 
-   [`broadcastQueryClient`](https://tanstack.com/query/latest/docs/framework/react/plugins/broadcastQueryClient) mirrors cache updates between open tabs over a `BroadcastChannel`. This persister stores one serialised cache per `key` and reads it only once, at startup, so broadcasting is what keeps the tabs' caches in step and stops them from overwriting each other's persisted data. Treat it as part of the setup rather than optional polish, and read [How sharing works](#how-sharing-works) before deciding to go without it.
+## Guides
 
-   The plugin is framework-agnostic and, in Tanstack's own terms, experimental — its API may change in a minor release.
-
-   ```typescript
-   // query-client.ts
-   import { broadcastQueryClient } from "@tanstack/query-broadcast-client-experimental";
-
-   broadcastQueryClient({ queryClient });
-   ```
-
-3. Render your app inside a [`PersistQueryClientProvider`](https://tanstack.com/query/latest/docs/framework/react/plugins/persistQueryClient#persistqueryclientprovider):
-
-   Pass the persister through `persistOptions`. The provider holds off rendering its children until the cache has been restored, so the first render already sees the shared data.
-
-   ```tsx
-   // App.tsx
-   import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
-   import { persister, queryClient } from "./query-client";
-
-   const persistOptions = { persister };
-
-   export default function App() {
-     return (
-       <PersistQueryClientProvider client={queryClient} persistOptions={persistOptions}>
-         <h1>Hello, world!</h1>
-         {/* Your app components */}
-       </PersistQueryClientProvider>
-     );
-   }
-   ```
+Nothing here is needed to get started. Each section stands on its own; read the one that matches what you are doing.
 
 ### Other frameworks
 
-Outside React, wire the same persister up imperatively with [`persistQueryClient`](https://tanstack.com/query/latest/docs/framework/react/plugins/persistQueryClient#persistqueryclient) from `@tanstack/query-persist-client-core`. Restoration is asynchronous, so await it before rendering anything that reads from the cache:
+Steps 1 to 3 above are the same outside React; only the provider in step 4 is React's. Elsewhere, wire the same persister up imperatively with [`persistQueryClient`](https://tanstack.com/query/latest/docs/framework/react/plugins/persistQueryClient#persistqueryclient) from `@tanstack/query-persist-client-core`. Restoration is asynchronous, so await it before rendering anything that reads from the cache:
 
 ```typescript
 import { persistQueryClient } from "@tanstack/query-persist-client-core";
@@ -197,34 +239,46 @@ await queryPersister.restoreQueries(queryClient);
 
 Use this _instead of_ `PersistQueryClientProvider` and `createSharedWorkerPersister`, not alongside them; running both persists the same data twice under different keys. Note that this API is marked experimental by TanStack and its shape may change in a minor release.
 
-## How sharing works
+### Bundler requirements
 
-The worker holds one in-memory store, shared by every tab connected to it. What that store does and does not synchronise is worth knowing before you rely on it:
+The worker ships as a second file, `dist/cache.worker.js`, and the bundle loads it with
 
-- **One value per key, written by whichever tab saved last.** `createSharedWorkerPersister` serialises the entire dehydrated `QueryClient` into a single string under its `key`, and each save replaces the previous value outright. A tab holding only queries A and B overwrites an entry that also held C.
-- **Restoring is a one-shot read at startup.** A tab reads the shared value once, while persistence is being set up, and never again. Anything another tab writes afterwards does not reach it, so the benefit is that a new tab starts warm rather than that open tabs stay in sync. Live sync is what `broadcastQueryClient` adds: with the in-memory caches kept in step, tabs write near-identical values instead of clobbering each other.
-- **A restore that doesn't produce a usable cache clears the entry for everyone.** `persistQueryClient` calls `removeClient()` when the `buster` doesn't match or when `maxAge` has elapsed. Because the store is shared, one tab making that call empties the entry every other tab is using. A read that merely _fails_ is deliberately kept out of that group — see [When a read fails](#when-a-read-fails).
-- **Access tokens are no exception.** Sharing a token across tabs is the headline use case, and it is subject to the same overwrites and clears as any other query: a tab whose own cache no longer holds the token will persist a value without it.
+```javascript
+new SharedWorker(new URL("./cache.worker.js", import.meta.url), { type: "module" });
+```
 
-Whether a deployment carries the cache across depends on the worker asset's URL, because that URL is part of the worker's identity (see [Which tabs share a worker](#which-tabs-share-a-worker)). If a deployment changes it — a content hash, typically — tabs opened afterwards connect to a fresh worker and start with an empty store, while already-open tabs keep talking to the old one; the two versions then don't share anything. If the URL is unchanged, old and new tabs are on the same worker during a rolling deployment: keep `buster` stable across versions whose cached shapes are compatible, so an older tab doesn't wipe an entry the newer ones just filled — or accept the wipe and let the next writer refill it.
+Your bundler has to recognise that pattern _inside a dependency in `node_modules`_, copy the file into your output, and rewrite the URL to point at the copy. Vite and webpack 5 do this, as do bundlers built on the same convention (Rspack, Parcel 2). Plain esbuild, older bundlers, and serving the package straight from `node_modules` with no build step do not: the URL then resolves to something that isn't there.
 
-[Per-query persistence](#per-query-persistence) avoids the whole-cache overwrite entirely: each query gets its own key, so tabs caching different queries add to the shared store instead of replacing each other's work, and an expired or unreadable entry drops only that query.
+Two more constraints on the emitted file:
 
-### Which tabs share a worker
+- **It must be served from the same origin as your page.** A cross-origin worker script cannot be loaded at all, and sharing is per-origin anyway, so a copy on a separate asset domain gets you nothing. If your build uploads assets to a CDN on another origin, use `workerUrl` below to point at a same-origin copy.
+- **Its URL is half the worker's identity.** Tabs share a store only while they load the worker from the same URL and under the same name — see [Which tabs share a worker](#which-tabs-share-a-worker).
 
-A `SharedWorker` is identified by its script URL _and_ its name, and the script URL here is the worker asset your bundler copies into your output. Two applications built separately on one origin normally serve that asset from different (usually content-hashed) URLs, so they already get separate workers and separate stores without doing anything. Sharing happens when applications serve the _same_ worker file — a shell and micro-frontends built together, for instance — and that is what [`namespace`](#recommendations) exists for: it changes the worker's name so those applications get a worker each. It has to be a non-empty string: `""` is the default worker's own name, so it would quietly share the store the option was passed to stay out of, and it throws a `TypeError` instead.
+If the worker asset isn't there, the browser reports the load failure and the persister treats it as terminal — the error is logged once, and every request from then on fails immediately rather than waiting out its timeout (see [Browser support](#browser-support)). Queries still work; nothing is persisted or shared.
 
-Which code that worker runs follows from the same rule. A `SharedWorker` is created once per `(script URL, name)` and lives until the last tab connected to it closes, so the script it runs is the one fetched when the _first_ tab connected. A tab opened later — on a newer deployment, carrying a newer version of this package — attaches to the worker that is already running and talks to the code it started with. It gets the newer code only once every tab holding the old worker has closed, or once the worker's URL changes: a content-hashed asset URL changes on every build, which is why this rarely shows up, while a `workerUrl` held stable across deployments — what you do to keep the cache alive across one — is exactly the case where it does.
+#### Hosting the worker yourself
 
-The two sides say which wire protocol they speak, so this can't be mistaken for something else. If a tab's build speaks a version the running worker doesn't, its requests fail with a `protocol` error naming both versions instead of being misread; reads then resolve empty and that tab runs on the network. The version changes only for a change that would make one side misread the other, so a worker and a tab from different releases normally talk to each other quite happily.
+For builds that can't trace the asset, copy `cache.worker.js` into whatever you serve and name it with `workerUrl`:
 
-## Security considerations
+```typescript
+export const persister = createSharedWorkerPersister({
+  workerUrl: "/static/cache.worker.js",
+});
+```
 
-The shared store is readable by any script on the origin. Nothing about the worker restricts an entry to the application that wrote it: same-origin code can open the same worker with `new SharedWorker(sameUrl, { name: "TANSTACK_QUERY_SHARED_CACHE_WORKER:MY_APP" })` and read every key in it, `namespace` or not. `namespace` is a collision guard, not an access boundary — the protection you get is `localStorage`'s, a store scoped to an origin rather than a private one.
+```shell
+cp node_modules/@sjpnz/query-shared-worker-persister/dist/cache.worker.js public/static/
+```
 
-Treat it accordingly: don't persist anything you would not put in `localStorage`. Access tokens are the headline use case for this package and are a reasonable fit wherever you would already accept them in `localStorage`, but that is a decision worth making deliberately rather than inheriting from the example. To keep particular queries out of the shared store, exclude them with TanStack's `shouldDehydrateQuery`, or strip them in the persister's `serialize` hook.
+The package also exports the subpath `@sjpnz/query-shared-worker-persister/cache.worker.js`, so a copy step that resolves rather than hard-codes a path — `import.meta.resolve("@sjpnz/query-shared-worker-persister/cache.worker.js")`, or a bundler plugin doing the same — keeps working if the published layout changes.
 
-## Browser Support
+The URL must be on the page's own origin. One that resolves to another origin is refused with a `TypeError` when the storage or persister is created: a cross-origin worker script cannot be loaded, and a store is shared per origin in any case, so a copy on an asset domain would share nothing even if it did load. A same-origin URL the browser refuses for its own reasons is reported as a warning naming that URL, and you get the no-op storage; a URL it accepts but nothing is served at fails to load, which is the terminal failure described above.
+
+It is an ES module and must be served as JavaScript. Every app that should share a store has to pass the same `workerUrl`, and changing it between deployments starts a fresh, empty worker — the same trade-off a content-hashed asset URL brings; [How sharing works](#how-sharing-works) covers what that means for open tabs.
+
+Changing it is also the only way to get new worker code running while tabs are still open, because a worker keeps the script the first tab to connect loaded and tabs opening later attach to it as it is ([Which tabs share a worker](#which-tabs-share-a-worker)). So if you take the copy step above and later update this package, name the file for the version you copied — `/static/cache.worker.1.2.3.js` — and accept the empty store that comes with the new URL. A path you keep fixed forever is the trade in the other direction: the cache survives every deployment, and the worker code turns over only once every tab has closed.
+
+### Browser support
 
 This package relies on [`SharedWorker`](https://developer.mozilla.org/en-US/docs/Web/API/SharedWorker), which is available in modern desktop browsers but **not** in some environments such as Chrome on Android and certain in-app webviews.
 
@@ -247,7 +301,7 @@ import {
 const persister = isSharedWorkerSupported() ? createSharedWorkerPersister() : undefined;
 ```
 
-### Server-side rendering
+#### Server-side rendering
 
 Importing this package on the server is safe, and silent. Under a framework that renders on the server — Next.js, Remix, SvelteKit, Nuxt — the module that creates the persister is evaluated there too, and the server has no `SharedWorker`: `isSharedWorkerSupported()` is `false` and both entry points hand back the no-op storage. Nothing is written to the server log and `onError` is not called, because a server never had a worker to lose and there is nothing to act on; the warning above is for a browser that lacks the API, which is a real fallback to know about. Nothing about server rendering needs to change to use this package, and no `next/dynamic` or `"use client"` gymnastics are needed to keep the logs clean.
 
@@ -303,16 +357,6 @@ The same option is available on `createSharedWorkerStorage` if you are wiring th
 
 The value must be greater than `0` and at most `2147483647` — about 24.8 days, the longest delay a timer can hold — or `Infinity`, which means no timeout at all: the request waits for the worker's answer however long it takes, and is otherwise only settled by a transport failure or by disposal. Anything else, including `0`, a negative number, `NaN` and any finite value past that limit, throws a `RangeError` when the persister or storage is created. Each of those would otherwise be handed to a timer that fires immediately, so every request would fail on the next tick — writes rejecting and reads resolving empty — and the cache would look permanently cold rather than misconfigured.
 
-### When a read fails
-
-Reads never reject. A `getItem` or `entries` the worker can't answer — a timeout, a worker that never started, an unreadable reply — resolves as though the store were empty, and reports a warning saying why.
-
-That is deliberate, and it is about the store being shared. `persistQueryClient` treats a restore that throws as a corrupt cache, and responds by calling `removeClient()`; here that deletes the entry inside the worker, which is the entry every other tab is living off. So a tab that was only slow to read — a heavy page, a tab throttled in the background, a worker starting while the machine is busy — would not just fail to warm itself, it would erase everyone else's cache. Resolving empty keeps the damage local: that tab fetches from the network, and the shared store is left alone.
-
-Writes still reject, so a save that didn't reach the worker reaches your `retry` hook and your error handling. And a genuine invalidation still clears the entry for everyone: a `buster` mismatch or an elapsed `maxAge` never goes through a failed read.
-
-If your application wants to know that the cache was unreachable, take the report through [`onError`](#diagnostics); the value itself is indistinguishable from a cold cache by design.
-
 ### Diagnostics
 
 Warnings and errors go to the console by default. Pass `onError` to take them instead — to a structured logger, an error reporter, or a `() => {}` if you want them gone. Nothing is written to the console once you do.
@@ -365,7 +409,7 @@ Every `createAsyncStoragePersister` option except `storage` is forwarded untouch
 
 | Option         | Type                                                              | Default                       | Purpose                                                                                                                                                                                                                |
 | -------------- | ----------------------------------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `key`          | `string`                                                          | `"REACT_QUERY_OFFLINE_CACHE"` | The entry the whole dehydrated cache is stored under. Give each application its own; see [Recommendations](#recommendations).                                                                                          |
+| `key`          | `string`                                                          | `"REACT_QUERY_OFFLINE_CACHE"` | The entry the whole dehydrated cache is stored under. Give each application its own.                                                                                                                                   |
 | `throttleTime` | `number`                                                          | `1000`                        | Milliseconds to coalesce saves over.                                                                                                                                                                                   |
 | `serialize`    | `(client: PersistedClient) => string \| Promise<string>`          | `JSON.stringify`              | Also the place to strip queries you don't want in a store any same-origin script can read; see [Security considerations](#security-considerations).                                                                    |
 | `deserialize`  | `(cached: string) => PersistedClient \| Promise<PersistedClient>` | `JSON.parse`                  | Inverse of `serialize`.                                                                                                                                                                                                |
@@ -411,7 +455,7 @@ The returned object:
 | `[Symbol.dispose]()`  | `void`                             | The same teardown as `dispose()`, so the storage can be declared with `using`; see [Disposal](#disposal).                                                                                             |
 | `mode`                | `"shared-worker" \| "noop"`        | Whether a transport was established at all. `"noop"` means nothing is persisted; see [Diagnostics](#diagnostics).                                                                                     |
 
-A write rejects with a `SharedWorkerStorageError` if the worker doesn't answer within `timeoutMs`, and rejects immediately once the storage is disposed or the worker has failed; a read resolves empty in all three cases. When `SharedWorker` is missing or refuses to be constructed you get the same shape backed by no-op storage — reads resolve empty and writes are dropped; see [Browser Support](#browser-support).
+A write rejects with a `SharedWorkerStorageError` if the worker doesn't answer within `timeoutMs`, and rejects immediately once the storage is disposed or the worker has failed; a read resolves empty in all three cases. When `SharedWorker` is missing or refuses to be constructed you get the same shape backed by no-op storage — reads resolve empty and writes are dropped; see [Browser support](#browser-support).
 
 #### Supplying your own port
 
@@ -444,7 +488,7 @@ This is mainly how the package's own tests drive the storage without a browser, 
 
 ### `isSharedWorkerSupported()`
 
-`true` when the `SharedWorker` constructor exists. A presence check only: it can't tell you the constructor will succeed, which is why construction failures fall back to no-op storage rather than throwing. See [Browser Support](#browser-support).
+`true` when the `SharedWorker` constructor exists. A presence check only: it can't tell you the constructor will succeed, which is why construction failures fall back to no-op storage rather than throwing. See [Browser support](#browser-support).
 
 ### Types
 
@@ -459,76 +503,33 @@ This is mainly how the package's own tests drive the storage without a browser, 
 | `StorageRequest`, `StorageResponse`  | The messages exchanged over the port, for anyone implementing a `port` or inspecting worker traffic. |
 | `StorageResult`, `StorageEntries`    | The payload shapes those messages carry.                                                             |
 
-## Recommendations
+## How sharing works
 
-To get the most out of this package and ensure optimal performance, consider the following recommendations:
+The worker holds one in-memory store, shared by every tab connected to it. What that store does and does not synchronise is worth knowing before you rely on it:
 
-1. Configure `staleTime` for your queries
+- **One value per key, written by whichever tab saved last.** `createSharedWorkerPersister` serialises the entire dehydrated `QueryClient` into a single string under its `key`, and each save replaces the previous value outright. A tab holding only queries A and B overwrites an entry that also held C.
+- **Restoring is a one-shot read at startup.** A tab reads the shared value once, while persistence is being set up, and never again. Anything another tab writes afterwards does not reach it, so the benefit is that a new tab starts warm rather than that open tabs stay in sync. Live sync is what `broadcastQueryClient` adds: with the in-memory caches kept in step, tabs write near-identical values instead of clobbering each other.
+- **A restore that doesn't produce a usable cache clears the entry for everyone.** `persistQueryClient` calls `removeClient()` when the `buster` doesn't match or when `maxAge` has elapsed. Because the store is shared, one tab making that call empties the entry every other tab is using. A read that merely _fails_ is deliberately kept out of that group — see [When a read fails](#when-a-read-fails).
+- **Access tokens are no exception.** Sharing a token across tabs is the headline use case, and it is subject to the same overwrites and clears as any other query: a tab whose own cache no longer holds the token will persist a value without it.
 
-   Set an appropriate `staleTime` for effective caching. Without it, queries will not be loaded from the cache, negating the benefits of this package.
+Whether a deployment carries the cache across depends on the worker asset's URL, because that URL is part of the worker's identity (see [Which tabs share a worker](#which-tabs-share-a-worker)). If a deployment changes it — a content hash, typically — tabs opened afterwards connect to a fresh worker and start with an empty store, while already-open tabs keep talking to the old one; the two versions then don't share anything. If the URL is unchanged, old and new tabs are on the same worker during a rolling deployment: keep `buster` stable across versions whose cached shapes are compatible, so an older tab doesn't wipe an entry the newer ones just filled — or accept the wipe and let the next writer refill it.
 
-   See the following links for more details:
-   - <https://tanstack.com/query/latest/docs/framework/react/guides/important-defaults>
-   - <https://tkdodo.eu/blog/react-query-as-a-state-manager>
+[Per-query persistence](#per-query-persistence) avoids the whole-cache overwrite entirely: each query gets its own key, so tabs caching different queries add to the shared store instead of replacing each other's work, and an expired or unreadable entry drops only that query.
 
-   ```typescript
-   // query-client.ts
-   // Configure all queries to be considered stale after 5 minutes
-   const STALE_TIME = 1000 * 60 * 5; // 5 minutes
+### Which tabs share a worker
 
-   export const queryClient = new QueryClient({
-     defaultOptions: {
-       queries: {
-         staleTime: STALE_TIME,
-       },
-     },
-   });
-   ```
+A `SharedWorker` is identified by its script URL _and_ its name, and the script URL here is the worker asset your bundler copies into your output. Two applications built separately on one origin normally serve that asset from different (usually content-hashed) URLs, so they already get separate workers and separate stores without doing anything. Sharing happens when applications serve the _same_ worker file — a shell and micro-frontends built together, for instance — and that is what [`namespace`](#createsharedworkerpersisteroptions) exists for: it changes the worker's name so those applications get a worker each. It has to be a non-empty string: `""` is the default worker's own name, so it would quietly share the store the option was passed to stay out of, and it throws a `TypeError` instead.
 
-2. Use a Named Identifier for Your Application
+Which code that worker runs follows from the same rule. A `SharedWorker` is created once per `(script URL, name)` and lives until the last tab connected to it closes, so the script it runs is the one fetched when the _first_ tab connected. A tab opened later — on a newer deployment, carrying a newer version of this package — attaches to the worker that is already running and talks to the code it started with. It gets the newer code only once every tab holding the old worker has closed, or once the worker's URL changes: a content-hashed asset URL changes on every build, which is why this rarely shows up, while a `workerUrl` held stable across deployments — what you do to keep the cache alive across one — is exactly the case where it does.
 
-   A unique identifier ensures that the cache remains relevant to your specific application, particularly when there are multiple applications running for a given origin.
+The two sides say which wire protocol they speak, so this can't be mistaken for something else. If a tab's build speaks a version the running worker doesn't, its requests fail with a `protocol` error naming both versions instead of being misread; reads then resolve empty and that tab runs on the network. The version changes only for a change that would make one side misread the other, so a worker and a tab from different releases normally talk to each other quite happily.
 
-   ```typescript
-   // query-client.ts
-   // Define a unique identifier for your application
-   const APP_NAME = "MY_AWESOME_APP";
+### When a read fails
 
-   // Configure the SharedWorker persister with the app-specific key
-   export const persister = createSharedWorkerPersister({
-     key: APP_NAME,
-   });
+Reads never reject. A `getItem` or `entries` the worker can't answer — a timeout, a worker that never started, an unreadable reply — resolves as though the store were empty, and reports a warning saying why.
 
-   // If using broadcastQueryClient, apply the same identifier
-   broadcastQueryClient({
-     queryClient,
-     broadcastChannel: APP_NAME,
-   });
-   ```
+That is deliberate, and it is about the store being shared. `persistQueryClient` treats a restore that throws as a corrupt cache, and responds by calling `removeClient()`; here that deletes the entry inside the worker, which is the entry every other tab is living off. So a tab that was only slow to read — a heavy page, a tab throttled in the background, a worker starting while the machine is busy — would not just fail to warm itself, it would erase everyone else's cache. Resolving empty keeps the damage local: that tab fetches from the network, and the shared store is left alone.
 
-   Applications that serve the same worker asset share a single `SharedWorker`, and therefore a single in-memory store, with `key` namespacing the entry within it. Pass a `namespace` as well to give this application a worker of its own — it changes the worker's name, so applications shipping the same worker file no longer land in the same store:
+Writes still reject, so a save that didn't reach the worker reaches your `retry` hook and your error handling. And a genuine invalidation still clears the entry for everyone: a `buster` mismatch or an elapsed `maxAge` never goes through a failed read.
 
-   ```typescript
-   export const persister = createSharedWorkerPersister({
-     key: APP_NAME,
-     namespace: APP_NAME, // separate SharedWorker from other apps shipping this worker file
-   });
-   ```
-
-   Applications built separately usually get separate workers already, because the worker asset's URL differs between their bundles — see [Which tabs share a worker](#which-tabs-share-a-worker). And note that `namespace` does not stop same-origin code from opening the worker and reading it; see [Security considerations](#security-considerations).
-
-3. Implement Cache Busting
-
-   Provide an application version to invalidate the cache when it doesn't match the current application version. This ensures that outdated data isn't persisted when one tab/window has a newer application version than another. Bear in mind that a mismatch clears the shared entry for every connected tab, not just the one that noticed — see [How sharing works](#how-sharing-works).
-
-   Add a `buster` to the `persistOptions` from step 3 above:
-
-   ```tsx
-   // App.tsx
-   const APP_VERSION = "MY_AWESOME_APP_v1.2.3";
-
-   const persistOptions = {
-     persister,
-     buster: APP_VERSION,
-   };
-   ```
+If your application wants to know that the cache was unreachable, take the report through [`onError`](#diagnostics); the value itself is indistinguishable from a cold cache by design.
