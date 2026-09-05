@@ -220,6 +220,33 @@ describe("no-op fallback when SharedWorker is unavailable", () => {
     }
   });
 
+  it("falls back and warns once when the SharedWorker constructor throws", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // An opaque origin (sandboxed iframe, blob:/data:/file: document) exposes
+      // the constructor and then rejects the call.
+      class ThrowingSharedWorker {
+        constructor() {
+          throw new DOMException("access denied", "SecurityError");
+        }
+      }
+      await withSharedWorker(ThrowingSharedWorker, async () => {
+        let storage!: ReturnType<typeof createSharedWorkerStorage>;
+        expect(() => {
+          storage = createSharedWorkerStorage();
+        }).not.toThrow();
+        await storage.setItem("k", "v");
+        await expect(storage.getItem("k")).resolves.toBeNull();
+        await storage.removeItem("k");
+        expect(() => storage.dispose()).not.toThrow();
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0]?.[0]).toContain("access denied");
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("does not warn or fall back when a port is injected", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {

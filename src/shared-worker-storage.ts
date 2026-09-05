@@ -58,10 +58,16 @@ interface Pending {
 }
 
 /**
- * Reports whether SharedWorker-backed storage can run in this environment.
- * Call this to decide up front whether to wire up the persister at all; if you
- * build the storage anyway in an unsupported environment it degrades to a no-op
- * (see {@link createSharedWorkerStorage}) rather than throwing.
+ * Reports whether the `SharedWorker` API exists in this environment. Call this
+ * to decide up front whether to wire up the persister at all; if you build the
+ * storage anyway in an unsupported environment it degrades to a no-op (see
+ * {@link createSharedWorkerStorage}) rather than throwing.
+ *
+ * This is a presence check, not a guarantee that a worker can be constructed:
+ * an opaque-origin document (a sandboxed iframe without `allow-same-origin`, or
+ * a `blob:`/`data:`/`file:` page) and some privacy or enterprise policies expose
+ * the constructor but reject the call. {@link createSharedWorkerStorage} falls
+ * back to the same no-op storage when that happens.
  */
 export function isSharedWorkerSupported(): boolean {
   return typeof SharedWorker !== "undefined";
@@ -73,9 +79,10 @@ export function isSharedWorkerSupported(): boolean {
  * the matching `id`, so concurrent calls never cross wires.
  *
  * With no `port` injected this spins up the shared `cache.worker.ts`. When
- * `SharedWorker` is unavailable (e.g. Chrome on Android, some webviews) it falls
- * back to a no-op storage — TanStack Query then runs with its normal in-memory
- * cache and no cross-tab persistence — and logs a single warning. Use
+ * `SharedWorker` is unavailable (e.g. Chrome on Android, some webviews) — or is
+ * present but refuses to be constructed, as on an opaque origin — it falls back
+ * to a no-op storage — TanStack Query then runs with its normal in-memory cache
+ * and no cross-tab persistence — and logs a single warning. Use
  * {@link isSharedWorkerSupported} to detect and branch before reaching this.
  *
  * If the worker fails to start — most often because its asset URL didn't resolve
@@ -145,9 +152,16 @@ export function createSharedWorkerStorage(
     rejectPending(error);
   }
 
-  const port =
+  const connection =
     options.port ??
     connectSharedWorker(options.namespace, (error) => handleTransportError(error, true));
+
+  // Constructing the worker can fail outright rather than failing later through
+  // `onerror`; there is no transport to set up in that case, so degrade to the
+  // same no-op storage an unsupported environment gets. Past this point the port
+  // is known to exist, which is what the closures above assume.
+  if (!connection) return createNoopStorage();
+  const port: PortAdapter = connection;
 
   port.onmessage = (event: MessageEvent<StorageResponse>) => {
     const message = event.data;
@@ -239,17 +253,25 @@ function createNoopStorage(): SharedWorkerStorage {
 const WORKER_NAME = "TANSTACK_QUERY_SHARED_CACHE_WORKER";
 
 /**
- * Instantiate the shared `cache.worker.ts` and return its port. Callers must
- * have confirmed support (see {@link isSharedWorkerSupported}); reaching here
- * without `SharedWorker` would throw a raw `ReferenceError`.
+ * Instantiate the shared `cache.worker.ts` and return its port, or `undefined`
+ * if the constructor rejected the call — an opaque origin, a `blob:`/`data:`/
+ * `file:` document, or a policy that disables workers all expose `SharedWorker`
+ * and then throw on construction. That is reported with the same warning an
+ * unsupported environment gets, and the caller degrades to no-op storage.
+ * Callers must still have confirmed support (see
+ * {@link isSharedWorkerSupported}); reaching here without `SharedWorker` at all
+ * would throw a raw `ReferenceError`.
  *
- * `onError` is invoked if the worker itself fails (most commonly because its
- * asset URL didn't resolve in the consumer's bundle) so the storage can fail
- * pending requests fast instead of waiting for each to time out. That failure is
- * unrecoverable — there is no worker to reconnect to — so callers are expected
- * to treat it as terminal.
+ * `onError` is invoked if the worker itself fails *after* construction (most
+ * commonly because its asset URL didn't resolve in the consumer's bundle) so the
+ * storage can fail pending requests fast instead of waiting for each to time
+ * out. That failure is unrecoverable — there is no worker to reconnect to — so
+ * callers are expected to treat it as terminal.
  */
-function connectSharedWorker(namespace?: string, onError?: (error: Error) => void): PortAdapter {
+function connectSharedWorker(
+  namespace?: string,
+  onError?: (error: Error) => void,
+): PortAdapter | undefined {
   // This package builds with `vp pack` (tsdown), which ships `cache.worker.ts`
   // as its own sibling entry (`dist/cache.worker.js`) and leaves this
   // `new URL("./cache.worker.js", import.meta.url)` reference untouched, so at
@@ -258,10 +280,21 @@ function connectSharedWorker(namespace?: string, onError?: (error: Error) => voi
   // that sibling file into its output, keeping it same-origin. That same-origin
   // requirement is what lets the SharedWorker actually be shared across tabs (a
   // cross-origin copy would silently break sharing).
-  const worker = new SharedWorker(new URL("./cache.worker.js", import.meta.url), {
-    type: "module",
-    name: namespace ? `${WORKER_NAME}:${namespace}` : WORKER_NAME,
-  });
+  let worker: SharedWorker;
+  try {
+    worker = new SharedWorker(new URL("./cache.worker.js", import.meta.url), {
+      type: "module",
+      name: namespace ? `${WORKER_NAME}:${namespace}` : WORKER_NAME,
+    });
+  } catch (cause) {
+    console.warn(
+      `[${PACKAGE_NAME}] SharedWorker could not be created in this environment ` +
+        `(${cause instanceof Error ? cause.message : String(cause)}); falling back ` +
+        "to no-op storage. The query cache will not be persisted or shared across " +
+        "tabs.",
+    );
+    return undefined;
+  }
   worker.onerror = (event) => {
     onError?.(new Error(`SharedWorker failed: ${event.message || "worker could not be started"}`));
   };
