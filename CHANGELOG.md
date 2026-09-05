@@ -18,6 +18,9 @@ history, so they summarise the visible behaviour rather than every change.
   request timeout that `createSharedWorkerStorage` accepts.
 - `workerUrl` on both `createSharedWorkerStorage` and `createSharedWorkerPersister`, for builds
   that cannot copy `cache.worker.js` out of `node_modules` and host the asset themselves.
+- `PortAdapter` is exported, so the object the `port` option accepts can now be named. The
+  protocol types it is written in terms of (`StorageRequest`, `StorageResponse`,
+  `StorageResult`, `StorageEntries`) are exported by name rather than wholesale.
 
 ### Changed
 

@@ -291,13 +291,13 @@ The persister hides the storage it creates, so `signal` is the only way to tear 
 
 Returns a `SharedWorkerStorage`: an `AsyncStorage` the shared worker backs, usable anywhere TanStack takes a storage.
 
-| Option      | Type                        | Default | Purpose                                                                                                               |
-| ----------- | --------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------- |
-| `timeoutMs` | `number`                    | `10000` | Give up on a pending request after this many milliseconds.                                                            |
-| `namespace` | `string`                    | —       | Appended to the worker's name, so apps shipping the same worker asset get a worker each.                              |
-| `workerUrl` | `string \| URL`             | —       | The worker's script URL, replacing the packaged `cache.worker.js`; see [Bundler requirements](#bundler-requirements). |
-| `signal`    | `AbortSignal`               | —       | Calls `dispose()` when aborted; an already-aborted signal disposes immediately.                                       |
-| `port`      | `MessagePort`-shaped object | —       | A test seam: pipe the protocol through your own port instead of constructing a worker. Not needed in app code.        |
+| Option      | Type            | Default | Purpose                                                                                                                              |
+| ----------- | --------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `timeoutMs` | `number`        | `10000` | Give up on a pending request after this many milliseconds.                                                                           |
+| `namespace` | `string`        | —       | Appended to the worker's name, so apps shipping the same worker asset get a worker each.                                             |
+| `workerUrl` | `string \| URL` | —       | The worker's script URL, replacing the packaged `cache.worker.js`; see [Bundler requirements](#bundler-requirements).                |
+| `signal`    | `AbortSignal`   | —       | Calls `dispose()` when aborted; an already-aborted signal disposes immediately.                                                      |
+| `port`      | `PortAdapter`   | —       | Carry the protocol over a port you supply instead of constructing a worker; see [Supplying your own port](#supplying-your-own-port). |
 
 The returned object:
 
@@ -311,6 +311,33 @@ The returned object:
 
 A write rejects if the worker doesn't answer within `timeoutMs`, and rejects immediately once the storage is disposed or the worker has failed; a read resolves empty in all three cases. When `SharedWorker` is missing or refuses to be constructed you get the same shape backed by no-op storage — reads resolve empty and writes are dropped; see [Browser Support](#browser-support).
 
+#### Supplying your own port
+
+`port` takes over from worker construction: give it anything matching `PortAdapter` and the storage talks to that instead, ignoring `namespace` and `workerUrl` and skipping the `SharedWorker` support check and its no-op fallback.
+
+```typescript
+import {
+  createSharedWorkerStorage,
+  type PortAdapter,
+  type StorageRequest,
+  type StorageResponse,
+} from "@sjpnz/query-shared-worker-persister";
+
+const port: PortAdapter = {
+  onmessage: null,
+  postMessage(request: StorageRequest) {
+    const response: StorageResponse = { kind: "response", id: request.id, ok: true, result: null };
+    port.onmessage?.({ data: response } as MessageEvent<StorageResponse>);
+  },
+};
+
+const storage = createSharedWorkerStorage({ port });
+```
+
+Every request carries an `id` and is answered by the response with the same `id`, so replies may arrive in any order; a request never answered is left to `timeoutMs`. Anything that isn't a well-formed `StorageResponse` is ignored, since a real shared worker's port is reachable by any same-origin script. `dispose()` calls `close()` on the port when it has one.
+
+This is mainly how the package's own tests drive the storage without a browser, and it is the seam to reach for when testing an application that persists through this package. It is not a plugin point for a different backing store: the worker's semantics — one store shared by every connected tab, last write wins — are what the rest of this document describes.
+
 ### `isSharedWorkerSupported()`
 
 `true` when the `SharedWorker` constructor exists. A presence check only: it can't tell you the constructor will succeed, which is why construction failures fall back to no-op storage rather than throwing. See [Browser Support](#browser-support).
@@ -322,6 +349,7 @@ A write rejects if the worker doesn't answer within `timeoutMs`, and rejects imm
 | `CreateSharedWorkerPersisterOptions` | The options object above.                                                                            |
 | `CreateSharedWorkerStorageOptions`   | The storage options object above.                                                                    |
 | `SharedWorkerStorage`                | The storage returned by `createSharedWorkerStorage`.                                                 |
+| `PortAdapter`                        | The port shape `port` accepts: the slice of `MessagePort` this package uses.                         |
 | `StorageRequest`, `StorageResponse`  | The messages exchanged over the port, for anyone implementing a `port` or inspecting worker traffic. |
 | `StorageResult`, `StorageEntries`    | The payload shapes those messages carry.                                                             |
 

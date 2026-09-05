@@ -6,7 +6,17 @@ import type {
   StorageResult,
 } from "./worker/protocol";
 
-/** The minimal `MessagePort` surface we use — lets tests inject a fake port. */
+/**
+ * The minimal `MessagePort` surface this package uses. A real `SharedWorker`
+ * port satisfies it, and so does anything else that can carry a
+ * {@link StorageRequest} out and a {@link StorageResponse} back — an in-process
+ * fake in a test, or another transport entirely. Pass one as
+ * {@link CreateSharedWorkerStorageOptions.port}.
+ *
+ * Only `postMessage` and `onmessage` are required; the optional members are
+ * used when present, so a fake need only implement the parts its test cares
+ * about.
+ */
 export interface PortAdapter {
   postMessage: (message: StorageRequest) => void;
   onmessage: ((event: MessageEvent<unknown>) => void) | null;
@@ -77,8 +87,15 @@ export interface CreateSharedWorkerStorageOptions {
    */
   signal?: AbortSignal;
   /**
-   * Inject a port instead of creating a real `SharedWorker`. Used by tests to
-   * pipe messages through an in-process store; not needed in app code.
+   * Carry the protocol over this {@link PortAdapter} instead of constructing a
+   * `SharedWorker`. Chiefly a test seam — pipe the messages through an
+   * in-process store and the storage becomes synchronous to drive — but any
+   * transport that can move a {@link StorageRequest} and return the matching
+   * {@link StorageResponse} works. Application code doesn't need it.
+   *
+   * Supplying a port replaces worker construction entirely, so `namespace` and
+   * `workerUrl` are ignored, no support check is made, and the storage never
+   * falls back to no-op. Disposal still closes the port if it has a `close`.
    */
   port?: PortAdapter;
 }
