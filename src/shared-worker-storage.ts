@@ -24,12 +24,15 @@ export interface SharedWorkerStorage extends AsyncStorage {
    * optional), so this storage can drive `experimental_createQueryPersister`,
    * which needs to iterate the store for `restoreQueries`, `persisterGc` and
    * `removeQueries`.
+   *
+   * Like `getItem`, this never rejects: a read the worker couldn't answer
+   * resolves empty.
    */
   entries: () => Promise<StorageEntries>;
   /**
-   * Detach the port handler and reject any in-flight requests. Idempotent: a
-   * second call does nothing. Once disposed the storage stays disposed, and
-   * every later call rejects straight away.
+   * Detach the port handler and settle any in-flight requests. Idempotent: a
+   * second call does nothing. Once disposed the storage stays disposed: later
+   * writes reject straight away, and later reads resolve empty.
    */
   dispose: () => void;
 }
@@ -123,10 +126,15 @@ export function isSharedWorkerSupported(): boolean {
  * If the worker fails to start — most often because its asset URL didn't resolve
  * in the consumer's bundle, which `workerUrl` exists to work around — the failure
  * is permanent: the error is logged once,
- * the port is closed, and every request from then on rejects with that same
+ * the port is closed, and every write from then on rejects with that same
  * error straight away rather than waiting out `timeoutMs`. A single
  * undeserializable response is treated as the lesser fault it is: the in-flight
- * requests reject, but the port stays open and later requests may still succeed.
+ * requests settle, but the port stays open and later requests may still succeed.
+ *
+ * Reads (`getItem` and `entries`) never reject at all: a read the worker
+ * couldn't answer resolves empty and is logged, so an unreachable cache looks
+ * like an empty one rather than a corrupt one — which `persistQueryClient`
+ * would answer by clearing the entry for every tab.
  */
 export function createSharedWorkerStorage(
   options: CreateSharedWorkerStorageOptions = {},
@@ -231,8 +239,9 @@ export function createSharedWorkerStorage(
     // Once the port is closed the browser drops `postMessage` silently, so a
     // request issued here would sit in `pending` and only fail at the timeout —
     // a misleading error, ten seconds late, holding a timer the whole way. Fail
-    // fast instead, and reject rather than resolve: writes that never reached
-    // the worker are surfaced to `createAsyncStoragePersister`'s `retry` hook.
+    // fast instead. Writes reject rather than resolve, so one that never reached
+    // the worker is surfaced to `createAsyncStoragePersister`'s `retry` hook;
+    // `read` converts the same rejection into an empty result for reads.
     if (disposed) return Promise.reject(new Error("SharedWorker storage disposed"));
     // Likewise once the worker has failed: there is no port left to answer, so
     // hand back the transport error that explains why rather than a timeout that
@@ -250,12 +259,51 @@ export function createSharedWorkerStorage(
     });
   }
 
+  /**
+   * Run a read, turning any failure into "the store holds nothing" rather than
+   * a rejection.
+   *
+   * This isn't leniency for its own sake. `persistQueryClient` reads a rejected
+   * restore as a corrupt cache and responds by calling `removeClient()`, which
+   * deletes the entry in the worker — and the worker's store belongs to every
+   * connected tab. So a tab that merely read too slowly (a heavy page, a
+   * throttled background tab, a worker starting under load) would not just fail
+   * to warm itself, it would erase the cache the other tabs are living off.
+   * Resolving empty makes that tab fetch from the network and leave the shared
+   * store alone. A `buster` or `maxAge` mismatch still clears the entry, since
+   * that path never goes through a failed read.
+   *
+   * Writes keep rejecting: a save that didn't happen has to reach the
+   * persister's `retry` hook, and no failed write can destroy another tab's
+   * data.
+   */
+  function read(
+    message: DistributiveOmit<StorageRequest, "id">,
+    empty: StorageResult,
+  ): Promise<StorageResult> {
+    return request(message).catch((error: unknown) => {
+      // A fatal transport failure is already reported where it happens, once.
+      // Everything else — a timeout, a worker-side error, a reply that broke
+      // the protocol — is reported here, so a cache that silently stays cold
+      // still says why.
+      if (error !== fatalError) {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `[${PACKAGE_NAME}] Could not read from the SharedWorker cache (${reason}); ` +
+            "continuing as though it were empty.",
+        );
+      }
+      return empty;
+    });
+  }
+
   // Each method narrows the shared result type to the shape its operation is
   // defined to return. The cast is sound because `request` only resolves a
-  // result that matched the operation it was sent for.
+  // result that matched the operation it was sent for, and a read that failed
+  // falls back to the empty value of that same shape.
   const storage: SharedWorkerStorage = {
-    getItem: (key) => request({ kind: "request", op: "getItem", key }) as Promise<string | null>,
-    entries: () => request({ kind: "request", op: "entries" }) as Promise<StorageEntries>,
+    getItem: (key) => read({ kind: "request", op: "getItem", key }, null) as Promise<string | null>,
+    entries: () => read({ kind: "request", op: "entries" }, []) as Promise<StorageEntries>,
     setItem: async (key, value) => {
       await request({ kind: "request", op: "setItem", key, value });
     },

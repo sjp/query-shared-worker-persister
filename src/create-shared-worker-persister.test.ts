@@ -1,4 +1,8 @@
-import type { PersistedClient } from "@tanstack/query-persist-client-core";
+import { QueryClient } from "@tanstack/query-core";
+import {
+  type PersistedClient,
+  persistQueryClientRestore,
+} from "@tanstack/query-persist-client-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   createSharedWorkerPersister,
@@ -35,7 +39,7 @@ describe("createSharedWorkerPersister", () => {
       const persister = createSharedWorkerPersister({ timeoutMs: 20 });
       // The default is three orders of magnitude longer, so a rejection naming
       // 20ms can only have come from the option being passed through.
-      await expect(persister.restoreClient()).rejects.toThrow(/timed out after 20ms/);
+      await expect(persister.removeClient()).rejects.toThrow(/timed out after 20ms/);
     });
   });
 
@@ -65,9 +69,9 @@ describe("createSharedWorkerPersister", () => {
     await withSharedWorker(FakeSharedWorker, async () => {
       const controller = new AbortController();
       const persister = createSharedWorkerPersister({ signal: controller.signal });
-      const restoring = persister.restoreClient();
+      const removing = persister.removeClient();
       controller.abort();
-      await expect(restoring).rejects.toThrow(/disposed/);
+      await expect(removing).rejects.toThrow(/disposed/);
     });
   });
 
@@ -80,6 +84,42 @@ describe("createSharedWorkerPersister", () => {
       await persister.removeClient();
       expect(store.getItem("MY_APP")).toBeNull();
       await expect(persister.restoreClient()).resolves.toBeUndefined();
+    });
+  });
+
+  it("restores nothing, instead of clearing the shared entry, when the read fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const worker = fakeSharedWorker({ dead: true });
+      await withSharedWorker(worker.FakeSharedWorker, async () => {
+        const persister = createSharedWorkerPersister({ timeoutMs: 20, key: "MY_APP" });
+        await persistQueryClientRestore({ queryClient: new QueryClient(), persister });
+        // A restore that throws is answered with `removeClient()`, which would
+        // empty the entry every other tab is reading. The read is all the
+        // worker may hear about a tab that simply couldn't reach it.
+        expect(worker.latest.postMessage.mock.calls.map(([request]) => request.op)).toEqual([
+          "getItem",
+        ]);
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("still clears the shared entry when the restored cache is busted", async () => {
+    const { FakeSharedWorker, store } = fakeSharedWorker();
+    await withSharedWorker(FakeSharedWorker, async () => {
+      const persister = createSharedWorkerPersister({ key: "MY_APP" });
+      await persister.persistClient({ ...persistedClient(), timestamp: Date.now(), buster: "v1" });
+      expect(store.getItem("MY_APP")).not.toBeNull();
+      // A buster mismatch is a real invalidation rather than a failed read, so
+      // it must go on removing the entry for everyone.
+      await persistQueryClientRestore({
+        queryClient: new QueryClient(),
+        persister,
+        buster: "v2",
+      });
+      expect(store.getItem("MY_APP")).toBeNull();
     });
   });
 

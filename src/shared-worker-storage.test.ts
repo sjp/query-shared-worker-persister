@@ -15,6 +15,26 @@ import { CacheStore } from "./worker/store";
 /** The fake worker instance {@link fakeSharedWorker} hands back. */
 type FakeWorker = ReturnType<typeof fakeSharedWorker>["latest"];
 
+/** A port that answers every request with the same worker-side error. */
+function createErrorPort(error = "boom"): PortAdapter {
+  const port: PortAdapter = {
+    onmessage: null,
+    postMessage(request: StorageRequest) {
+      queueMicrotask(() => {
+        port.onmessage?.({
+          data: { kind: "response", id: request.id, ok: false, error },
+        } as MessageEvent<StorageResponse>);
+      });
+    },
+  };
+  return port;
+}
+
+/** A port that never answers, so only the client itself can settle a request. */
+function createDeadPort(): PortAdapter {
+  return { onmessage: null, postMessage() {} };
+}
+
 describe("createSharedWorkerStorage", () => {
   it("returns null for a missing key", async () => {
     const storage = createSharedWorkerStorage({ port: createFakePort() });
@@ -51,23 +71,21 @@ describe("createSharedWorkerStorage", () => {
     storage.dispose();
   });
 
-  it("rejects a response whose result is the wrong shape for the request", async () => {
+  it("rejects a write whose response carries the wrong result shape", async () => {
     // A same-origin sender - or a mismatched build sharing the worker - can
     // answer with a well-formed envelope carrying the other operation's result.
     const port: PortAdapter = {
       onmessage: null,
       postMessage(request: StorageRequest) {
         queueMicrotask(() => {
-          const result = request.op === "entries" ? "not-an-array" : [["a", "1"]];
           port.onmessage?.({
-            data: { kind: "response", id: request.id, ok: true, result },
+            data: { kind: "response", id: request.id, ok: true, result: [["a", "1"]] },
           } as MessageEvent<StorageResponse>);
         });
       },
     };
     const storage = createSharedWorkerStorage({ port, timeoutMs: 60_000 });
-    await expect(storage.getItem("k")).rejects.toThrow(/unexpected getItem result/);
-    await expect(storage.entries()).rejects.toThrow(/unexpected entries result/);
+    await expect(storage.setItem("k", "v")).rejects.toThrow(/unexpected setItem result/);
     storage.dispose();
   });
 
@@ -80,33 +98,21 @@ describe("createSharedWorkerStorage", () => {
     storage.dispose();
   });
 
-  it("rejects when the worker reports an error", async () => {
-    const errorPort: PortAdapter = {
-      onmessage: null,
-      postMessage(request: StorageRequest) {
-        queueMicrotask(() => {
-          errorPort.onmessage?.({
-            data: { kind: "response", id: request.id, ok: false, error: "boom" },
-          } as MessageEvent<StorageResponse>);
-        });
-      },
-    };
-    const storage = createSharedWorkerStorage({ port: errorPort });
-    await expect(storage.getItem("k")).rejects.toThrow("boom");
+  it("rejects a write when the worker reports an error", async () => {
+    const storage = createSharedWorkerStorage({ port: createErrorPort() });
+    await expect(storage.setItem("k", "v")).rejects.toThrow("boom");
     storage.dispose();
   });
 
-  it("rejects when a request times out", async () => {
-    const deadPort: PortAdapter = { onmessage: null, postMessage() {} }; // never replies
-    const storage = createSharedWorkerStorage({ port: deadPort, timeoutMs: 20 });
-    await expect(storage.getItem("k")).rejects.toThrow(/timed out/);
+  it("rejects a write that times out", async () => {
+    const storage = createSharedWorkerStorage({ port: createDeadPort(), timeoutMs: 20 });
+    await expect(storage.setItem("k", "v")).rejects.toThrow(/timed out/);
     storage.dispose();
   });
 
-  it("rejects in-flight requests when disposed", async () => {
-    const deadPort: PortAdapter = { onmessage: null, postMessage() {} };
-    const storage = createSharedWorkerStorage({ port: deadPort });
-    const inflight = storage.getItem("k");
+  it("rejects in-flight writes when disposed", async () => {
+    const storage = createSharedWorkerStorage({ port: createDeadPort() });
+    const inflight = storage.setItem("k", "v");
     storage.dispose();
     await expect(inflight).rejects.toThrow(/disposed/);
   });
@@ -121,17 +127,15 @@ describe("createSharedWorkerStorage", () => {
     expect(port.onmessageerror).toBeNull();
   });
 
-  it("rejects requests issued after disposal without waiting out the timeout", async () => {
+  it("rejects writes issued after disposal without waiting out the timeout", async () => {
     const postMessage = vi.fn();
     // The timeout is far longer than the test could tolerate, so a rejection
     // arriving at all proves it came from the fast path rather than the timer.
     const port: PortAdapter = { onmessage: null, postMessage };
     const storage = createSharedWorkerStorage({ port, timeoutMs: 60_000 });
     storage.dispose();
-    await expect(storage.getItem("k")).rejects.toThrow(/disposed/);
     await expect(storage.setItem("k", "v")).rejects.toThrow(/disposed/);
     await expect(storage.removeItem("k")).rejects.toThrow(/disposed/);
-    await expect(storage.entries()).rejects.toThrow(/disposed/);
     expect(postMessage).not.toHaveBeenCalled();
   });
 
@@ -144,12 +148,12 @@ describe("createSharedWorkerStorage", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects in-flight requests and logs when the port reports a message error", async () => {
+  it("settles in-flight requests and logs when the port reports a message error", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      const deadPort: PortAdapter = { onmessage: null, postMessage() {} };
+      const deadPort = createDeadPort();
       const storage = createSharedWorkerStorage({ port: deadPort });
-      const inflight = storage.getItem("k");
+      const inflight = storage.setItem("k", "v");
       deadPort.onmessageerror?.({} as MessageEvent);
       await expect(inflight).rejects.toThrow(/deserialized/);
       expect(error).toHaveBeenCalledTimes(1);
@@ -182,12 +186,12 @@ describe("createSharedWorkerStorage", () => {
     ["an error response with no message", { kind: "response", id: 1, ok: false }],
     ["a non-object payload", "hello"],
   ])("ignores %s and leaves the request pending", async (_label, data) => {
-    const port: PortAdapter = { onmessage: null, postMessage() {} };
+    const port = createDeadPort();
     const storage = createSharedWorkerStorage({ port, timeoutMs: 20 });
-    const inflight = storage.getItem("k");
+    const inflight = storage.setItem("k", "v");
     port.onmessage?.({ data } as MessageEvent<unknown>);
     // Only the timeout settles it, proving the stray message never matched the
-    // pending id - it would otherwise have resolved with a bogus value.
+    // pending id - it would otherwise have settled the request early.
     await expect(inflight).rejects.toThrow(/timed out/);
     storage.dispose();
   });
@@ -204,10 +208,12 @@ describe("createSharedWorkerStorage", () => {
   });
 
   it("disposes when the provided signal aborts", async () => {
-    const deadPort: PortAdapter = { onmessage: null, postMessage() {} };
     const controller = new AbortController();
-    const storage = createSharedWorkerStorage({ port: deadPort, signal: controller.signal });
-    const inflight = storage.getItem("k");
+    const storage = createSharedWorkerStorage({
+      port: createDeadPort(),
+      signal: controller.signal,
+    });
+    const inflight = storage.setItem("k", "v");
     controller.abort();
     await expect(inflight).rejects.toThrow(/disposed/);
   });
@@ -217,6 +223,55 @@ describe("createSharedWorkerStorage", () => {
     createSharedWorkerStorage({ port, signal: AbortSignal.abort() });
     // Disposal detaches the port handler, so no responses are ever processed.
     expect(port.onmessage).toBeNull();
+  });
+});
+
+/**
+ * `persistQueryClient` reads a rejected restore as a corrupt cache and answers
+ * it by calling `removeClient()` - which, on a store the worker shares, deletes
+ * the entry every other tab is using. A tab that was merely slow would take the
+ * whole cache down with it, so reads resolve empty instead of rejecting.
+ */
+describe("a read the worker cannot answer", () => {
+  /** What both reads produced, and how many warnings they logged. */
+  async function readFrom(storage: SharedWorkerStorage) {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      return {
+        item: await storage.getItem("k"),
+        entries: await storage.entries(),
+        warnings: warn.mock.calls.length,
+      };
+    } finally {
+      warn.mockRestore();
+    }
+  }
+
+  it("resolves empty and warns when the worker never answers", async () => {
+    const storage = createSharedWorkerStorage({ port: createDeadPort(), timeoutMs: 20 });
+    await expect(readFrom(storage)).resolves.toEqual({ item: null, entries: [], warnings: 2 });
+    storage.dispose();
+  });
+
+  it("resolves empty and warns when the worker reports an error", async () => {
+    const storage = createSharedWorkerStorage({ port: createErrorPort() });
+    await expect(readFrom(storage)).resolves.toEqual({ item: null, entries: [], warnings: 2 });
+    storage.dispose();
+  });
+
+  it("resolves empty once the storage is disposed", async () => {
+    // Far longer a timeout than the test could tolerate, so resolving at all
+    // proves the answer came from the fast path rather than the timer.
+    const storage = createSharedWorkerStorage({ port: createFakePort(), timeoutMs: 60_000 });
+    storage.dispose();
+    await expect(readFrom(storage)).resolves.toEqual({ item: null, entries: [], warnings: 2 });
+  });
+
+  it("leaves writes rejecting, so a failed save still reaches the caller", async () => {
+    const storage = createSharedWorkerStorage({ port: createDeadPort(), timeoutMs: 20 });
+    await expect(storage.setItem("k", "v")).rejects.toThrow(/timed out/);
+    await expect(storage.removeItem("k")).rejects.toThrow(/timed out/);
+    storage.dispose();
   });
 });
 
@@ -366,21 +421,22 @@ describe("when the SharedWorker itself fails", () => {
     }
   }
 
-  it("rejects the in-flight requests with the transport error", async () => {
+  it("rejects the in-flight writes with the transport error", async () => {
     await withFailingWorker(async (worker, storage) => {
-      const inflight = storage.getItem("k");
+      const inflight = storage.setItem("k", "v");
       worker.fail("404");
       await expect(inflight).rejects.toThrow(/SharedWorker failed: 404/);
     });
   });
 
-  it("rejects later requests immediately instead of waiting out the timeout", async () => {
+  it("settles later requests immediately instead of waiting out the timeout", async () => {
     await withFailingWorker(async (worker, storage) => {
       worker.fail();
-      await expect(storage.getItem("k")).rejects.toThrow(/SharedWorker failed/);
       await expect(storage.setItem("k", "v")).rejects.toThrow(/SharedWorker failed/);
       await expect(storage.removeItem("k")).rejects.toThrow(/SharedWorker failed/);
-      await expect(storage.entries()).rejects.toThrow(/SharedWorker failed/);
+      // Reads answer just as promptly, but as an empty cache rather than an error.
+      await expect(storage.getItem("k")).resolves.toBeNull();
+      await expect(storage.entries()).resolves.toEqual([]);
     });
   });
 
@@ -390,13 +446,14 @@ describe("when the SharedWorker itself fails", () => {
       expect(worker.close).toHaveBeenCalledTimes(1);
       expect(worker.port.onmessage).toBeNull();
       worker.postMessage.mockClear();
-      await expect(storage.getItem("k")).rejects.toThrow(/SharedWorker failed/);
+      await expect(storage.setItem("k", "v")).rejects.toThrow(/SharedWorker failed/);
       expect(worker.postMessage).not.toHaveBeenCalled();
     });
   });
 
   it("logs the failure once however many requests follow", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const worker = fakeSharedWorker({ dead: true });
       await withSharedWorker(worker.FakeSharedWorker, async () => {
@@ -410,9 +467,12 @@ describe("when the SharedWorker itself fails", () => {
           ]),
         ).resolves.toHaveLength(3);
         expect(error).toHaveBeenCalledTimes(1);
+        // The read fell back to an empty result without repeating the report.
+        expect(warn).not.toHaveBeenCalled();
         storage.dispose();
       });
     } finally {
+      warn.mockRestore();
       error.mockRestore();
     }
   });

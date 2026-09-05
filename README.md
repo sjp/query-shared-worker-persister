@@ -60,7 +60,7 @@ Two more constraints on the emitted file:
 
 Worth checking in both your dev server and a production build: dependencies are resolved differently in each, so the asset can be emitted correctly by one and not the other.
 
-If the worker asset isn't there, the browser reports the load failure and the persister treats it as terminal — the error is logged once, and every read and write rejects immediately from then on (see [Browser Support](#browser-support)). Queries still work; nothing is persisted or shared.
+If the worker asset isn't there, the browser reports the load failure and the persister treats it as terminal — the error is logged once, and every request from then on fails immediately rather than waiting out its timeout (see [Browser Support](#browser-support)). Queries still work; nothing is persisted or shared.
 
 #### Hosting the worker yourself
 
@@ -191,7 +191,7 @@ The worker holds one in-memory store, shared by every tab connected to it. What 
 
 - **One value per key, written by whichever tab saved last.** `createSharedWorkerPersister` serialises the entire dehydrated `QueryClient` into a single string under its `key`, and each save replaces the previous value outright. A tab holding only queries A and B overwrites an entry that also held C.
 - **Restoring is a one-shot read at startup.** A tab reads the shared value once, while persistence is being set up, and never again. Anything another tab writes afterwards does not reach it, so the benefit is that a new tab starts warm rather than that open tabs stay in sync. Live sync is what `broadcastQueryClient` adds: with the in-memory caches kept in step, tabs write near-identical values instead of clobbering each other.
-- **A restore that doesn't produce a usable cache clears the entry for everyone.** `persistQueryClient` calls `removeClient()` when the `buster` doesn't match, when `maxAge` has elapsed, or when restoring throws — a request timeout included. Because the store is shared, one tab making that call empties the entry every other tab is using.
+- **A restore that doesn't produce a usable cache clears the entry for everyone.** `persistQueryClient` calls `removeClient()` when the `buster` doesn't match or when `maxAge` has elapsed. Because the store is shared, one tab making that call empties the entry every other tab is using. A read that merely _fails_ is deliberately kept out of that group — see [When a read fails](#when-a-read-fails).
 - **Access tokens are no exception.** Sharing a token across tabs is the headline use case, and it is subject to the same overwrites and clears as any other query: a tab whose own cache no longer holds the token will persist a value without it.
 
 Whether a deployment carries the cache across depends on the worker asset's URL, because that URL is part of the worker's identity (see [Which tabs share a worker](#which-tabs-share-a-worker)). If a deployment changes it — a content hash, typically — tabs opened afterwards connect to a fresh worker and start with an empty store, while already-open tabs keep talking to the old one; the two versions then don't share anything. If the URL is unchanged, old and new tabs are on the same worker during a rolling deployment: keep `buster` stable across versions whose cached shapes are compatible, so an older tab doesn't wipe an entry the newer ones just filled — or accept the wipe and let the next writer refill it.
@@ -218,7 +218,7 @@ When `SharedWorker` is unavailable, the persister degrades gracefully to a no-op
 
 The same fallback covers a `SharedWorker` that exists but refuses to be constructed — an opaque-origin document (a sandboxed iframe without `allow-same-origin`, or a `blob:`, `data:` or `file:` page), or a privacy mode or enterprise policy that disables workers. `isSharedWorkerSupported()` only reports that the API is present, so it returns `true` in those environments; construction is attempted, the error is logged as a warning, and you get the no-op storage rather than a throw at startup.
 
-A worker that is available but fails to _start_ is a different matter — the usual cause is the worker asset not being copied into your bundle output, so its URL 404s. That failure is treated as terminal: the error is logged once, and every read and write from then on rejects immediately with it rather than hanging until the request timeout. Reads and writes reject (rather than quietly resolving) so the failure reaches `createAsyncStoragePersister`'s `retry` hook and your own error handling instead of looking like an empty cache.
+A worker that is available but fails to _start_ is a different matter — the usual cause is the worker asset not being copied into your bundle output, so its URL 404s. That failure is treated as terminal: the error is logged once, and every request from then on is answered immediately rather than hanging until the request timeout. Writes reject, so the failure reaches `createAsyncStoragePersister`'s `retry` hook and your own error handling; reads resolve empty, for the reason below.
 
 If you'd rather branch on support yourself — for example to skip wiring up persistence entirely — use the exported check:
 
@@ -245,13 +245,23 @@ controller.abort();
 
 ### Request timeout
 
-Every read and write waits for the worker to answer and rejects after 10 seconds. Pass `timeoutMs` to change that — raise it if the worker starts slowly on your pages (a heavy first paint, or a throttled background tab), lower it if you would rather give up on the cache quickly and let the network serve the first render:
+Every read and write waits up to 10 seconds for the worker to answer, after which the write rejects and the read resolves empty ([why](#when-a-read-fails)). Pass `timeoutMs` to change that — raise it if the worker starts slowly on your pages (a heavy first paint, or a throttled background tab), lower it if you would rather give up on the cache quickly and let the network serve the first render:
 
 ```typescript
 const persister = createSharedWorkerPersister({ timeoutMs: 2_000 });
 ```
 
 The same option is available on `createSharedWorkerStorage` if you are wiring the storage up yourself.
+
+### When a read fails
+
+Reads never reject. A `getItem` or `entries` the worker can't answer — a timeout, a worker that never started, an unreadable reply — resolves as though the store were empty, and logs a warning saying why.
+
+That is deliberate, and it is about the store being shared. `persistQueryClient` treats a restore that throws as a corrupt cache, and responds by calling `removeClient()`; here that deletes the entry inside the worker, which is the entry every other tab is living off. So a tab that was only slow to read — a heavy page, a tab throttled in the background, a worker starting while the machine is busy — would not just fail to warm itself, it would erase everyone else's cache. Resolving empty keeps the damage local: that tab fetches from the network, and the shared store is left alone.
+
+Writes still reject, so a save that didn't reach the worker reaches your `retry` hook and your error handling. And a genuine invalidation still clears the entry for everyone: a `buster` mismatch or an elapsed `maxAge` never goes through a failed read.
+
+If your application wants to know that the cache was unreachable, watch the console warning; the value itself is indistinguishable from a cold cache by design.
 
 ## API
 
@@ -271,7 +281,7 @@ Every `createAsyncStoragePersister` option except `storage` is forwarded untouch
 | `deserialize`  | `(cached: string) => PersistedClient \| Promise<PersistedClient>` | `JSON.parse`                  | Inverse of `serialize`.                                                                                                                             |
 | `retry`        | `AsyncPersistRetryer`                                             | —                             | Called when a save fails, to shrink the client and try again.                                                                                       |
 | `namespace`    | `string`                                                          | —                             | Give this app a worker, and therefore a store, of its own; see [Which tabs share a worker](#which-tabs-share-a-worker).                             |
-| `timeoutMs`    | `number`                                                          | `10000`                       | How long a read or write waits for the worker before rejecting; see [Request timeout](#request-timeout).                                            |
+| `timeoutMs`    | `number`                                                          | `10000`                       | How long a read or write waits for the worker before giving up; see [Request timeout](#request-timeout).                                            |
 | `workerUrl`    | `string \| URL`                                                   | —                             | Load the worker from a copy you host, for builds that can't emit the packaged asset; see [Bundler requirements](#bundler-requirements).             |
 | `signal`       | `AbortSignal`                                                     | —                             | Disposes the underlying storage when aborted.                                                                                                       |
 
@@ -283,7 +293,7 @@ Returns a `SharedWorkerStorage`: an `AsyncStorage` the shared worker backs, usab
 
 | Option      | Type                        | Default | Purpose                                                                                                               |
 | ----------- | --------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------- |
-| `timeoutMs` | `number`                    | `10000` | Reject a pending request after this many milliseconds.                                                                |
+| `timeoutMs` | `number`                    | `10000` | Give up on a pending request after this many milliseconds.                                                            |
 | `namespace` | `string`                    | —       | Appended to the worker's name, so apps shipping the same worker asset get a worker each.                              |
 | `workerUrl` | `string \| URL`             | —       | The worker's script URL, replacing the packaged `cache.worker.js`; see [Bundler requirements](#bundler-requirements). |
 | `signal`    | `AbortSignal`               | —       | Calls `dispose()` when aborted; an already-aborted signal disposes immediately.                                       |
@@ -291,15 +301,15 @@ Returns a `SharedWorkerStorage`: an `AsyncStorage` the shared worker backs, usab
 
 The returned object:
 
-| Member                | Returns                            | Notes                                                                                                                                 |
-| --------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `getItem(key)`        | `Promise<string \| null>`          | `null` when the key is absent.                                                                                                        |
-| `setItem(key, value)` | `Promise<void>`                    | Replaces any existing value outright; see [How sharing works](#how-sharing-works).                                                    |
-| `removeItem(key)`     | `Promise<void>`                    | Removes the entry for every connected tab.                                                                                            |
-| `entries()`           | `Promise<Array<[string, string]>>` | Every pair in the store, including entries written by other apps on the same worker. Required by `experimental_createQueryPersister`. |
-| `dispose()`           | `void`                             | Rejects in-flight requests and closes the port. Idempotent, and every later read or write rejects at once.                            |
+| Member                | Returns                            | Notes                                                                                                                                                            |
+| --------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `getItem(key)`        | `Promise<string \| null>`          | `null` when the key is absent, and also when the read fails; see [When a read fails](#when-a-read-fails).                                                        |
+| `setItem(key, value)` | `Promise<void>`                    | Replaces any existing value outright; see [How sharing works](#how-sharing-works).                                                                               |
+| `removeItem(key)`     | `Promise<void>`                    | Removes the entry for every connected tab.                                                                                                                       |
+| `entries()`           | `Promise<Array<[string, string]>>` | Every pair in the store, including entries written by other apps on the same worker. Required by `experimental_createQueryPersister`. Empty when the read fails. |
+| `dispose()`           | `void`                             | Settles in-flight requests and closes the port. Idempotent; afterwards writes reject at once and reads resolve empty.                                            |
 
-Each call rejects if the worker doesn't answer within `timeoutMs`, and rejects immediately once the storage is disposed or the worker has failed. When `SharedWorker` is missing or refuses to be constructed you get the same shape backed by no-op storage — reads resolve empty and writes are dropped; see [Browser Support](#browser-support).
+A write rejects if the worker doesn't answer within `timeoutMs`, and rejects immediately once the storage is disposed or the worker has failed; a read resolves empty in all three cases. When `SharedWorker` is missing or refuses to be constructed you get the same shape backed by no-op storage — reads resolve empty and writes are dropped; see [Browser Support](#browser-support).
 
 ### `isSharedWorkerSupported()`
 
