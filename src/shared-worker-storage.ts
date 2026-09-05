@@ -13,7 +13,11 @@ export interface PortAdapter {
 }
 
 export interface SharedWorkerStorage extends AsyncStorage {
-  /** Detach the port handler and reject any in-flight requests. */
+  /**
+   * Detach the port handler and reject any in-flight requests. Idempotent: a
+   * second call does nothing. Once disposed the storage stays disposed, and
+   * every later `getItem`/`setItem`/`removeItem` rejects straight away.
+   */
   dispose: () => void;
 }
 
@@ -90,6 +94,7 @@ export function createSharedWorkerStorage(
 
   const pending = new Map<number, Pending>();
   let nextId = 1;
+  let disposed = false;
 
   // A transport-level failure (worker failed to load, or a response that can't be
   // deserialized) can't be tied to a single request id, so reject everything
@@ -125,6 +130,13 @@ export function createSharedWorkerStorage(
   port.start?.();
 
   function request(message: DistributiveOmit<StorageRequest, "id">): Promise<string | null> {
+    // Once the port is closed the browser drops `postMessage` silently, so a
+    // request issued here would sit in `pending` and only fail at the timeout —
+    // a misleading error, ten seconds late, holding a timer the whole way. Fail
+    // fast instead, and reject rather than resolve: writes that never reached
+    // the worker are surfaced to `createAsyncStoragePersister`'s `retry` hook.
+    if (disposed) return Promise.reject(new Error("SharedWorker storage disposed"));
+
     const id = nextId++;
     return new Promise<string | null>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -145,6 +157,8 @@ export function createSharedWorkerStorage(
       await request({ kind: "request", op: "removeItem", key });
     },
     dispose: () => {
+      if (disposed) return;
+      disposed = true;
       for (const entry of pending.values()) {
         clearTimeout(entry.timer);
         entry.reject(new Error("SharedWorker storage disposed"));

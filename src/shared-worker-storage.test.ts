@@ -104,6 +104,28 @@ describe("createSharedWorkerStorage", () => {
     expect(port.onmessageerror).toBeNull();
   });
 
+  it("rejects requests issued after disposal without waiting out the timeout", async () => {
+    const postMessage = vi.fn();
+    // The timeout is far longer than the test could tolerate, so a rejection
+    // arriving at all proves it came from the fast path rather than the timer.
+    const port: PortAdapter = { onmessage: null, postMessage };
+    const storage = createSharedWorkerStorage({ port, timeoutMs: 60_000 });
+    storage.dispose();
+    await expect(storage.getItem("k")).rejects.toThrow(/disposed/);
+    await expect(storage.setItem("k", "v")).rejects.toThrow(/disposed/);
+    await expect(storage.removeItem("k")).rejects.toThrow(/disposed/);
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+
+  it("is idempotent: disposing twice does not close the port twice or throw", () => {
+    const close = vi.fn();
+    const port: PortAdapter = { onmessage: null, postMessage() {}, close };
+    const storage = createSharedWorkerStorage({ port });
+    storage.dispose();
+    expect(() => storage.dispose()).not.toThrow();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects in-flight requests and logs when the port reports a message error", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
