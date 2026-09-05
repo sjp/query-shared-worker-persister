@@ -28,6 +28,13 @@ export default defineConfig({
     entry: { index: "src/index.ts", "cache.worker": "src/worker/cache.worker.ts" },
     platform: "browser",
     format: ["esm"],
+    // Both entries get declarations, even though the worker has no public
+    // surface and its `dist/cache.worker.d.ts` is therefore an empty module.
+    // The file still has to exist: the `./cache.worker.js` export has no
+    // `types` condition, so TypeScript types it by the declaration sitting
+    // beside the JavaScript file, and dropping it leaves that export untyped.
+    // Narrowing this to the one entry with a surface (`dts: { entry }`) is
+    // what makes it disappear, so don't.
     dts: true,
     // The public types name `Symbol.dispose`, which only exists in the
     // `esnext.disposable` lib. Consumers targeting `ES2022`..`ES2024` don't have
