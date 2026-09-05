@@ -113,6 +113,8 @@ This package relies on [`SharedWorker`](https://developer.mozilla.org/en-US/docs
 
 When `SharedWorker` is unavailable, the persister degrades gracefully to a no-op storage: TanStack Query keeps working with its normal in-memory cache, just without cross-tab persistence. A single warning is logged to the console so the fallback is visible during development.
 
+A worker that is available but fails to _start_ is a different matter — the usual cause is the worker asset not being copied into your bundle output, so its URL 404s. That failure is treated as terminal: the error is logged once, and every read and write from then on rejects immediately with it rather than hanging until the request timeout. Reads and writes reject (rather than quietly resolving) so the failure reaches `createAsyncStoragePersister`'s `retry` hook and your own error handling instead of looking like an empty cache.
+
 If you'd rather branch on support yourself — for example to skip wiring up persistence entirely — use the exported check:
 
 ```typescript

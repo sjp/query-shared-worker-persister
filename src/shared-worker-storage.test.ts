@@ -141,6 +141,22 @@ describe("createSharedWorkerStorage", () => {
     }
   });
 
+  it("keeps the port usable after a single undeserializable message", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const port = createFakePort();
+      const storage = createSharedWorkerStorage({ port });
+      port.onmessageerror?.({} as MessageEvent);
+      // The worker is still there, so the next round trip must go through.
+      await storage.setItem("k", "v");
+      await expect(storage.getItem("k")).resolves.toBe("v");
+      expect(error).toHaveBeenCalledTimes(1);
+      storage.dispose();
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   it("disposes when the provided signal aborts", async () => {
     const deadPort: PortAdapter = { onmessage: null, postMessage() {} };
     const controller = new AbortController();
@@ -216,6 +232,102 @@ describe("no-op fallback when SharedWorker is unavailable", () => {
       });
     } finally {
       warn.mockRestore();
+    }
+  });
+});
+
+/**
+ * A `SharedWorker` stand-in whose port never replies, so the only thing that can
+ * settle a request is the storage itself. `fail()` fires `onerror` the way the
+ * browser does when the worker script can't be loaded.
+ */
+class FakeSharedWorker {
+  static latest: FakeSharedWorker | undefined;
+  onerror: ((event: { message: string }) => void) | null = null;
+  postMessage = vi.fn();
+  close = vi.fn();
+  port: PortAdapter;
+
+  constructor() {
+    this.port = { onmessage: null, postMessage: this.postMessage, close: this.close };
+    FakeSharedWorker.latest = this;
+  }
+
+  fail(message = "boot failed") {
+    this.onerror?.({ message });
+  }
+}
+
+describe("when the SharedWorker itself fails", () => {
+  /** Build a storage over a fresh {@link FakeSharedWorker} and hand back both. */
+  async function withFailingWorker(
+    fn: (
+      worker: FakeSharedWorker,
+      storage: ReturnType<typeof createSharedWorkerStorage>,
+    ) => Promise<void>,
+  ) {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await withSharedWorker(FakeSharedWorker, async () => {
+        // Far longer than the test could tolerate, so any rejection that arrives
+        // proves it came from the fast path rather than the timer.
+        const storage = createSharedWorkerStorage({ timeoutMs: 60_000 });
+        const worker = FakeSharedWorker.latest;
+        if (!worker) throw new Error("no SharedWorker was constructed");
+        await fn(worker, storage);
+        storage.dispose();
+      });
+    } finally {
+      error.mockRestore();
+    }
+  }
+
+  it("rejects the in-flight requests with the transport error", async () => {
+    await withFailingWorker(async (worker, storage) => {
+      const inflight = storage.getItem("k");
+      worker.fail("404");
+      await expect(inflight).rejects.toThrow(/SharedWorker failed: 404/);
+    });
+  });
+
+  it("rejects later requests immediately instead of waiting out the timeout", async () => {
+    await withFailingWorker(async (worker, storage) => {
+      worker.fail();
+      await expect(storage.getItem("k")).rejects.toThrow(/SharedWorker failed/);
+      await expect(storage.setItem("k", "v")).rejects.toThrow(/SharedWorker failed/);
+      await expect(storage.removeItem("k")).rejects.toThrow(/SharedWorker failed/);
+    });
+  });
+
+  it("stops posting to the dead port and closes it", async () => {
+    await withFailingWorker(async (worker, storage) => {
+      worker.fail();
+      expect(worker.close).toHaveBeenCalledTimes(1);
+      expect(worker.port.onmessage).toBeNull();
+      worker.postMessage.mockClear();
+      await expect(storage.getItem("k")).rejects.toThrow(/SharedWorker failed/);
+      expect(worker.postMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  it("logs the failure once however many requests follow", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await withSharedWorker(FakeSharedWorker, async () => {
+        const storage = createSharedWorkerStorage({ timeoutMs: 60_000 });
+        FakeSharedWorker.latest?.fail();
+        await expect(
+          Promise.allSettled([
+            storage.getItem("a"),
+            storage.setItem("b", "1"),
+            storage.removeItem("c"),
+          ]),
+        ).resolves.toHaveLength(3);
+        expect(error).toHaveBeenCalledTimes(1);
+        storage.dispose();
+      });
+    } finally {
+      error.mockRestore();
     }
   });
 });

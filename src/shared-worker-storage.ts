@@ -77,6 +77,13 @@ export function isSharedWorkerSupported(): boolean {
  * back to a no-op storage — TanStack Query then runs with its normal in-memory
  * cache and no cross-tab persistence — and logs a single warning. Use
  * {@link isSharedWorkerSupported} to detect and branch before reaching this.
+ *
+ * If the worker fails to start — most often because its asset URL didn't resolve
+ * in the consumer's bundle — the failure is permanent: the error is logged once,
+ * the port is closed, and every request from then on rejects with that same
+ * error straight away rather than waiting out `timeoutMs`. A single
+ * undeserializable response is treated as the lesser fault it is: the in-flight
+ * requests reject, but the port stays open and later requests may still succeed.
  */
 export function createSharedWorkerStorage(
   options: CreateSharedWorkerStorageOptions = {},
@@ -95,14 +102,11 @@ export function createSharedWorkerStorage(
   const pending = new Map<number, Pending>();
   let nextId = 1;
   let disposed = false;
+  let closed = false;
+  // Set once the transport is beyond recovery; every later request rejects with it.
+  let fatalError: Error | undefined;
 
-  // A transport-level failure (worker failed to load, or a response that can't be
-  // deserialized) can't be tied to a single request id, so reject everything
-  // in flight rather than letting each call hang until its timeout. Logged too,
-  // since the most likely cause — a misresolved worker asset URL — is otherwise
-  // invisible until the 10s timeout.
-  function handleTransportError(error: Error) {
-    console.error(`[${PACKAGE_NAME}] ${error.message}`);
+  function rejectPending(error: Error) {
     for (const entry of pending.values()) {
       clearTimeout(entry.timer);
       entry.reject(error);
@@ -110,7 +114,40 @@ export function createSharedWorkerStorage(
     pending.clear();
   }
 
-  const port = options.port ?? connectSharedWorker(options.namespace, handleTransportError);
+  /** Detach the port handlers and close it. Safe to call more than once. */
+  function closePort() {
+    if (closed) return;
+    closed = true;
+    port.onmessage = null;
+    port.onmessageerror = null;
+    port.close?.();
+  }
+
+  // A transport-level failure can't be tied to a single request id, so reject
+  // everything in flight rather than letting each call hang until its timeout.
+  // Logged too, since the most likely cause — a misresolved worker asset URL —
+  // is otherwise invisible until the 10s timeout.
+  //
+  // The two failures differ in how much they condemn: a message that can't be
+  // deserialized is a single bad response, so the port stays open and later
+  // requests are free to succeed, while the worker itself failing means there is
+  // nothing left to talk to. The latter is `fatal`: the port is closed and every
+  // subsequent request rejects immediately with this same error instead of
+  // posting into the void and waiting out its timeout. The error is logged here
+  // and only here, so a fatal failure reports once no matter how many requests
+  // follow it.
+  function handleTransportError(error: Error, fatal: boolean) {
+    console.error(`[${PACKAGE_NAME}] ${error.message}`);
+    if (fatal) {
+      fatalError = error;
+      closePort();
+    }
+    rejectPending(error);
+  }
+
+  const port =
+    options.port ??
+    connectSharedWorker(options.namespace, (error) => handleTransportError(error, true));
 
   port.onmessage = (event: MessageEvent<StorageResponse>) => {
     const message = event.data;
@@ -125,7 +162,10 @@ export function createSharedWorkerStorage(
     }
   };
   port.onmessageerror = () => {
-    handleTransportError(new Error("SharedWorker sent a message that could not be deserialized"));
+    handleTransportError(
+      new Error("SharedWorker sent a message that could not be deserialized"),
+      false,
+    );
   };
   port.start?.();
 
@@ -136,6 +176,10 @@ export function createSharedWorkerStorage(
     // fast instead, and reject rather than resolve: writes that never reached
     // the worker are surfaced to `createAsyncStoragePersister`'s `retry` hook.
     if (disposed) return Promise.reject(new Error("SharedWorker storage disposed"));
+    // Likewise once the worker has failed: there is no port left to answer, so
+    // hand back the transport error that explains why rather than a timeout that
+    // doesn't.
+    if (fatalError) return Promise.reject(fatalError);
 
     const id = nextId++;
     return new Promise<string | null>((resolve, reject) => {
@@ -159,14 +203,8 @@ export function createSharedWorkerStorage(
     dispose: () => {
       if (disposed) return;
       disposed = true;
-      for (const entry of pending.values()) {
-        clearTimeout(entry.timer);
-        entry.reject(new Error("SharedWorker storage disposed"));
-      }
-      pending.clear();
-      port.onmessage = null;
-      port.onmessageerror = null;
-      port.close?.();
+      rejectPending(new Error("SharedWorker storage disposed"));
+      closePort();
     },
   };
 
@@ -207,7 +245,9 @@ const WORKER_NAME = "TANSTACK_QUERY_SHARED_CACHE_WORKER";
  *
  * `onError` is invoked if the worker itself fails (most commonly because its
  * asset URL didn't resolve in the consumer's bundle) so the storage can fail
- * pending requests fast instead of waiting for each to time out.
+ * pending requests fast instead of waiting for each to time out. That failure is
+ * unrecoverable — there is no worker to reconnect to — so callers are expected
+ * to treat it as terminal.
  */
 function connectSharedWorker(namespace?: string, onError?: (error: Error) => void): PortAdapter {
   // This package builds with `vp pack` (tsdown), which ships `cache.worker.ts`

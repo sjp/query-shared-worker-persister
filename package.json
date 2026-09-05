@@ -16,6 +16,9 @@
     "dist"
   ],
   "type": "module",
+  "sideEffects": [
+    "**/cache.worker.js"
+  ],
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
@@ -23,7 +26,6 @@
       "import": "./dist/index.js"
     }
   },
-  "sideEffects": ["**/cache.worker.js"],
   "scripts": {
     "build": "tsc && vp pack",
     "lint": "vp lint",
