@@ -58,3 +58,27 @@ complete once all three of these agree:
 Prefer `vp migrate`, which re-pins `vite-plus` and the alias together. Otherwise edit the
 override by hand, then run `vp install` (not `--frozen-lockfile`) and commit the refreshed
 `package-lock.json`. `npm run check:toolchain` verifies all three and runs in CI.
+
+## Releasing
+
+Publishing is done by CI, from a tag. Nothing is published from a developer machine, so the
+tarball on npm is always the one GitHub Actions built from a tagged commit, and it carries an
+npm provenance attestation pointing back at that commit and workflow run.
+
+To cut a release:
+
+1. Move the `Unreleased` entries in `CHANGELOG.md` under a new version heading with today's
+   date, and start a fresh `Unreleased` section.
+2. Bump `version` in `package.json` (`npm version <major|minor|patch> --no-git-tag-version`
+   keeps the lockfile in step).
+3. Commit both, then tag the commit `v<version>` and push the commit and the tag.
+
+The tag triggers `.github/workflows/release.yml`, which refuses to go on if the tag and
+`package.json` disagree, then runs the same gates as CI (`check:toolchain`, `check`, `build`,
+`test`) before `npm publish --provenance --access public`. Authentication is npm trusted
+publishing over the job's OIDC token — there is no npm token in repository secrets, and the
+package must be configured for trusted publishing against this repository and workflow on
+npmjs.com for the publish step to be authorised.
+
+Releases before this workflow existed were published by hand and were never tagged, so
+`v0.2.0` and earlier have no tag to compare against.

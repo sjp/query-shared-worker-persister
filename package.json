@@ -27,6 +27,10 @@
     },
     "./cache.worker.js": "./dist/cache.worker.js"
   },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "tsc && vp pack",
     "check": "vp check",

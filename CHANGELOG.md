@@ -1,0 +1,97 @@
+# Changelog
+
+All notable changes to this project are documented here.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
+project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+Versions up to and including 0.2.0 predate this file and were reconstructed from the commit
+history, so they summarise the visible behaviour rather than every change.
+
+## [Unreleased]
+
+### Added
+
+- `entries()` on `SharedWorkerStorage`, returning every key/value pair in the shared store, so
+  the storage can drive TanStack's per-query persister (`experimental_createQueryPersister`).
+- `timeoutMs` on `createSharedWorkerPersister`, which previously could not configure the
+  request timeout that `createSharedWorkerStorage` accepts.
+- `workerUrl` on both `createSharedWorkerStorage` and `createSharedWorkerPersister`, for builds
+  that cannot copy `cache.worker.js` out of `node_modules` and host the asset themselves.
+
+### Changed
+
+- `@tanstack/query-async-storage-persister` and `@tanstack/query-persist-client-core` are now
+  peer dependencies. The published types import from them instead of inlining private copies,
+  so a consuming project must have both installed.
+- A failed transport is now sticky: once a message to the worker cannot be sent, later requests
+  settle immediately instead of each waiting out the full timeout.
+- Requests issued after `dispose()` settle immediately — writes reject, reads resolve empty —
+  rather than hanging until the timeout.
+- An unusable `SharedWorker` constructor (one that throws, as in an opaque-origin document) now
+  falls back to the same no-op storage used when the API is missing entirely.
+- Both sides of the port validate incoming messages, so a malformed or unknown message is
+  answered with an error instead of resolving as `undefined`.
+
+### Fixed
+
+- A cache read the worker could not answer resolves as empty rather than as `null`, so a
+  timeout in one tab no longer makes TanStack treat the shared store as empty and overwrite it.
+
+## [0.2.0] - 2026-06-03
+
+### Added
+
+- `isSharedWorkerSupported()`, an up-front check for the `SharedWorker` API.
+- `namespace`, which changes the worker's name so that apps shipping the same worker asset can
+  keep separate stores.
+- `signal`, which disposes the storage when the given `AbortSignal` aborts. This is the only way
+  to bound the lifetime of storage created through `createSharedWorkerPersister`, which does not
+  expose `dispose()`.
+- A no-op storage fallback, with a warning, when `SharedWorker` is unavailable. Older and mobile
+  browsers no longer crash on startup.
+- A warning when a message to the worker cannot be posted.
+
+### Changed
+
+- `dispose()` closes the underlying `MessagePort` as well as detaching its handler.
+- The worker asset is declared as a side effect so bundlers keep it.
+- The build moved to Vite+ (`vp pack`/tsdown).
+
+## [0.1.1] - 2026-06-02
+
+### Changed
+
+- Rewritten without [Comlink](https://github.com/GoogleChromeLabs/comlink): the client and the
+  worker now exchange plain request/response messages over the port. This replaced the
+  `createSharedStorage`/`createSharedWorker` exports with `createSharedWorkerStorage`, and
+  removed the runtime dependency along with the proxy-related failures it caused.
+- Packaging fixes so that the published bundle and its worker asset resolve in a consuming app.
+
+No 0.1.0 was released.
+
+## [0.0.1-alpha4] - 2024-09-20
+
+### Fixed
+
+- Feature-detect `SharedWorker` in a way that survives server-side rendering, so the package can
+  be imported from a Next.js app.
+
+## [0.0.1-alpha3] - 2024-09-15
+
+### Fixed
+
+- Corrected the repository URL in the package metadata.
+
+## [0.0.1-alpha2] - 2024-09-15
+
+### Fixed
+
+- Export the public types, and correct the build configuration used to produce them.
+
+## [0.0.1-alpha1] - 2024-09-15
+
+### Added
+
+- First published release: a TanStack Query persister backed by a `SharedWorker`, so tabs and
+  windows on one origin share a query cache.

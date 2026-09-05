@@ -1,0 +1,57 @@
+name: Release
+
+permissions:
+  contents: read
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      # Lets npm mint the provenance attestation from this job's OIDC token, and
+      # authenticate to the registry without a long-lived token in secrets.
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version: 24
+          cache: true
+      - run: vp install --frozen-lockfile
+      # A tag that disagrees with the manifest would publish a version nobody can
+      # trace back to a commit, so stop before anything is built.
+      - name: Check the tag matches package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node --print "require('./package.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $version" >&2
+            exit 1
+          fi
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: playwright-${{ runner.os }}-
+      - run: vp run playwright:install
+      # The same gates CI runs, because this is the build that ships: the tarball
+      # must come from source that formats, lints, type checks and passes tests.
+      - run: vp run check:toolchain
+      - run: vp run check
+      - run: vp run build
+      - run: vp run test
+      # Trusted publishing and provenance need npm 11.5.1 or newer; take the
+      # version the project already pins rather than whatever the runner ships.
+      - name: Match the pinned npm
+        run: npm install --global "npm@$(node --print "require('./package.json').packageManager.split('@')[1]")"
+      - name: List the files that will be published
+        run: npm publish --dry-run
+      - run: npm publish --provenance --access public
