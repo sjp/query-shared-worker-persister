@@ -173,6 +173,38 @@ describe("the workerUrl option", () => {
   });
 });
 
+/**
+ * The option's only job is to change the worker's name, and the empty string is
+ * the one value that cannot do it: it leaves the storage on the default worker,
+ * sharing the store it was passed to stay out of. That reads as a working cache
+ * holding somebody else's entries, so it is refused where it is passed.
+ */
+describe("the namespace option", () => {
+  it("throws for an empty namespace, naming the option", () => {
+    expect(() => createSharedWorkerStorage({ port: createFakePort(), namespace: "" })).toThrow(
+      TypeError,
+    );
+    expect(() => createSharedWorkerStorage({ port: createFakePort(), namespace: "" })).toThrow(
+      /namespace must not be empty/,
+    );
+  });
+
+  it("throws even where SharedWorker is unavailable, so the option is checked everywhere", async () => {
+    await withSharedWorker(undefined, () => {
+      expect(() => createSharedWorkerStorage({ namespace: "" })).toThrow(TypeError);
+    });
+  });
+
+  it("takes an explicit undefined as no namespace at all", async () => {
+    // What a caller passing the option conditionally hands over, which asks for
+    // the default worker rather than for a name that isn't one.
+    using storage = createSharedWorkerStorage({ port: createFakePort(), namespace: undefined });
+    expect(storage.mode).toBe("shared-worker");
+    await storage.setItem("k", "v");
+    await expect(storage.getItem("k")).resolves.toBe("v");
+  });
+});
+
 describe("the SharedWorker it constructs", () => {
   /** Construct a storage over a recording fake and hand back what it asked for. */
   async function constructionFor(options?: CreateSharedWorkerStorageOptions) {

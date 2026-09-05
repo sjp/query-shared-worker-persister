@@ -9,6 +9,7 @@ import {
   createDeadPort,
   createErrorPort,
   createFakePort,
+  createResultPort,
   fakeSharedWorker,
   recorder,
   rejectionFrom,
@@ -62,6 +63,39 @@ describe("a read the worker cannot answer", () => {
     // and no more - a persister reads on every query mount.
     await expect(readFrom(storage)).resolves.toEqual({ item: null, entries: [], warnings: 1 });
     await expect(readFrom(storage)).resolves.toEqual({ item: null, entries: [], warnings: 0 });
+  });
+
+  it("resolves empty and reports a protocol failure when the result fits another operation", async () => {
+    // `getItem` is defined to answer with a string or null, so pairs are some
+    // other operation's answer - and a caller reading a cached value has no
+    // reason to be handed an array. The read is refused and falls back to empty
+    // rather than resolving with it.
+    const { reported, onError } = recorder();
+    using storage = createSharedWorkerStorage({
+      port: createResultPort([["a", "1"]]),
+      onError,
+      timeoutMs: 60_000,
+    });
+    await expect(storage.getItem("k")).resolves.toBeNull();
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.code).toBe("protocol");
+    expect(reported[0]?.message).toContain("unexpected getItem result");
+  });
+
+  it("resolves empty and reports the same failure when entries is answered with a value", async () => {
+    // The mismatch the other way round: `entries` is the one operation answered
+    // with pairs, so a bare string is not its result however well formed the
+    // envelope carrying it is.
+    const { reported, onError } = recorder();
+    using storage = createSharedWorkerStorage({
+      port: createResultPort("v"),
+      onError,
+      timeoutMs: 60_000,
+    });
+    await expect(storage.entries()).resolves.toEqual([]);
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.code).toBe("protocol");
+    expect(reported[0]?.message).toContain("unexpected entries result");
   });
 
   it("leaves writes rejecting, so a failed save still reaches the caller", async () => {

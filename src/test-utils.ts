@@ -1,7 +1,12 @@
 import { expect, type Mock, vi } from "vite-plus/test";
 import { type PortAdapter, SharedWorkerStorageError } from "./shared-worker-storage";
 import { respond } from "./worker/connection";
-import type { StorageRequest, StorageResponse } from "./worker/protocol";
+import {
+  PROTOCOL_VERSION,
+  type StorageRequest,
+  type StorageResponse,
+  type StorageResult,
+} from "./worker/protocol";
 import { CacheStore } from "./worker/store";
 
 /**
@@ -43,6 +48,28 @@ export function createErrorPort(error = "boom"): PortAdapter {
       queueMicrotask(() => {
         port.onmessage?.({
           data: { kind: "response", id: request.id, ok: false, error },
+        } as MessageEvent<StorageResponse>);
+      });
+    },
+  };
+  return port;
+}
+
+/**
+ * A port that answers every request with the same successful result, whatever
+ * was asked for. Stands in for a sender whose envelope is well formed but whose
+ * payload belongs to another operation — a script of someone else's on the
+ * origin, or a build that reads the protocol differently — so the client's own
+ * check of the result against the request it sent can be exercised in either
+ * direction.
+ */
+export function createResultPort(result: StorageResult): PortAdapter {
+  const port: PortAdapter = {
+    onmessage: null,
+    postMessage(request: StorageRequest) {
+      queueMicrotask(() => {
+        port.onmessage?.({
+          data: { kind: "response", id: request.id, ok: true, result, version: PROTOCOL_VERSION },
         } as MessageEvent<StorageResponse>);
       });
     },

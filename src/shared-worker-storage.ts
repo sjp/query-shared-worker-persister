@@ -161,6 +161,11 @@ export interface CreateSharedWorkerStorageOptions {
    * workers already. A `namespace` is what keeps apps shipping the *same* worker
    * file — a shell and its micro-frontends, say — out of each other's store.
    *
+   * Must not be `""`. The empty string is the default worker's name, so a
+   * storage given one would join the very store the option was passed to stay
+   * out of; it throws a `TypeError` when the storage is created instead. Omit
+   * the option, or pass `undefined`, to join the default worker on purpose.
+   *
    * It is not an access boundary: any same-origin script can open that worker
    * under the same name and read every entry in it, just as it could read
    * `localStorage`. Don't store values here you wouldn't put in `localStorage`.
@@ -325,12 +330,14 @@ function isDocumentEnvironment(): boolean {
  * case it goes there and the console is left alone. Each report is a
  * {@link SharedWorkerStorageError} carrying a `code` for the kind of failure.
  *
- * Two options throw rather than being reported, because each can only be a
- * programming error and each would otherwise leave the cache silently and
- * permanently cold: an out-of-range `timeoutMs`, a deadline no timer can honour
- * (see {@link CreateSharedWorkerStorageOptions.timeoutMs} for the accepted
- * range), and a `workerUrl` pointing at another origin, a script no browser
- * will load.
+ * Three options throw rather than being reported, because each can only be a
+ * programming error and none of them shows up as a failure at run time: an
+ * out-of-range `timeoutMs`, a deadline no timer can honour that would leave the
+ * cache permanently cold (see
+ * {@link CreateSharedWorkerStorageOptions.timeoutMs} for the accepted range); a
+ * `workerUrl` pointing at another origin, a script no browser will load; and an
+ * empty `namespace`, which asks for a worker of this app's own and would
+ * quietly get the shared one.
  */
 export function createSharedWorkerStorage(
   options: CreateSharedWorkerStorageOptions = {},
@@ -340,8 +347,11 @@ export function createSharedWorkerStorage(
   // than one that only surfaces in environments that have a SharedWorker. A
   // `workerUrl` is exempt where a port was injected, which replaces worker
   // construction entirely: that URL is never loaded, so it never has to be
-  // loadable.
+  // loadable. A `namespace` is checked either way: whether it names a
+  // worker of its own is a property of the string, not of the environment or of
+  // what the storage ends up talking to.
   validateTimeoutMs(timeoutMs);
+  if (options.namespace !== undefined) validateNamespace(options.namespace);
   if (!options.port && options.workerUrl !== undefined) validateWorkerUrl(options.workerUrl);
 
   // A signal that aborted before this call asks for a storage that is over
@@ -765,6 +775,26 @@ function validateTimeoutMs(timeoutMs: number): void {
         `received ${String(timeoutMs)}.`,
     );
   }
+}
+
+/**
+ * Reject a `namespace` that names no worker of its own.
+ *
+ * The option's only job is to change the worker's name, and `""` is the one
+ * value that cannot: it leaves the name the default worker's, so the storage
+ * connects to exactly the worker the caller was separating themselves from and
+ * reads and writes the store they asked to stay out of. Nothing about that
+ * looks like a failure — the cache works, holding another app's entries — so
+ * the empty string is refused where it is passed rather than found later
+ * through a key that collided.
+ */
+function validateNamespace(namespace: string): void {
+  if (namespace !== "") return;
+  throw new TypeError(
+    `[${PACKAGE_NAME}] namespace must not be empty: an empty name is the default ` +
+      "worker's, so this storage would share the store the option asks to stay out of. " +
+      "Pass a name, or omit the option to join the default worker deliberately.",
+  );
 }
 
 /**

@@ -22,9 +22,10 @@ export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptio
   timeoutMs?: number | undefined;
   /**
    * Give this app its own SharedWorker, and its own store, instead of sharing
-   * one with other apps that serve the same worker asset. Not an access
-   * boundary — any same-origin script can open the same worker. See
-   * {@link createSharedWorkerStorage}'s `namespace`.
+   * one with other apps that serve the same worker asset. Must not be `""`,
+   * which names the default worker and so shares it; that throws a `TypeError`
+   * here. Not an access boundary either — any same-origin script can open the
+   * same worker. See {@link createSharedWorkerStorage}'s `namespace`.
    */
   namespace?: string | undefined;
   /**

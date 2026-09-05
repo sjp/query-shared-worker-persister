@@ -5,6 +5,7 @@ import {
   createErrorPort,
   createFakePort,
   createRecordingPort,
+  createResultPort,
   fakeSharedWorker,
   recorder,
   rejectionFrom,
@@ -64,19 +65,41 @@ describe("createSharedWorkerStorage", () => {
   it("rejects a write whose response carries the wrong result shape", async () => {
     // A same-origin sender - or a mismatched build sharing the worker - can
     // answer with a well-formed envelope carrying the other operation's result.
-    const port: PortAdapter = {
-      onmessage: null,
-      postMessage(request: StorageRequest) {
-        queueMicrotask(() => {
-          port.onmessage?.({
-            data: { kind: "response", id: request.id, ok: true, result: [["a", "1"]] },
-          } as MessageEvent<StorageResponse>);
-        });
-      },
-    };
-    const storage = createSharedWorkerStorage({ port, timeoutMs: 60_000 });
+    // Only `entries` is answered with pairs, so a write answered with them is
+    // answering some other request.
+    using storage = createSharedWorkerStorage({
+      port: createResultPort([["a", "1"]]),
+      timeoutMs: 60_000,
+    });
     await expect(storage.setItem("k", "v")).rejects.toThrow(/unexpected setItem result/);
-    storage.dispose();
+    // The mismatch runs the other way too - a read answered with a value only a
+    // write or a `getItem` could have produced - where it surfaces as an empty
+    // read and a report rather than a rejection; see the diagnostics suite.
+  });
+
+  it("settles a request from a port that answers inside postMessage", async () => {
+    // The port in this package's own documentation replies synchronously, and a
+    // response can only be correlated to a request already in the pending map.
+    // Post before registering the entry and that reply arrives with nothing to
+    // settle, leaving the documented port's every request to its timeout.
+    vi.useFakeTimers();
+    try {
+      const store = new CacheStore();
+      const port: PortAdapter = {
+        onmessage: null,
+        postMessage(request: StorageRequest) {
+          port.onmessage?.({ data: respond(store, request) } as MessageEvent<unknown>);
+        },
+      };
+      using storage = createSharedWorkerStorage({ port, timeoutMs: 60_000 });
+      await storage.setItem("k", "v");
+      await expect(storage.getItem("k")).resolves.toBe("v");
+      // Each request was answered before its own `setTimeout` returned, so a
+      // timer cleared on the wrong side of that would still be scheduled here.
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("correlates concurrent requests to the correct responses", async () => {

@@ -107,6 +107,10 @@ history, so they summarise the visible behaviour rather than every change.
   `RangeError` naming the option and its range. Each of those was previously passed straight to
   `setTimeout`, which fires on them immediately, so every request failed on the next tick and
   the cache looked permanently cold rather than misconfigured.
+- `namespace` is validated when the storage or persister is created, and an empty string now
+  throws a `TypeError` naming the option. The empty name is the default worker's, so a storage
+  created with one joined the very store the option is passed to stay out of — visible only as
+  a cache that works while holding another app's entries, rather than as a misconfiguration.
 - `timeoutMs: Infinity` means no timeout: the request waits for the worker's answer indefinitely
   and is otherwise settled only by a transport failure or by disposal. It previously overflowed
   the timer's 32-bit delay and timed every request out at once.
