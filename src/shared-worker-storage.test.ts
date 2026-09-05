@@ -252,6 +252,29 @@ describe("createSharedWorkerStorage", () => {
     // Disposal detaches the port handler, so no responses are ever processed.
     expect(port.onmessage).toBeNull();
   });
+
+  it("detaches its abort listener when disposed by hand", () => {
+    // One controller can outlive many storages, and every listener left on it
+    // holds its storage - pending map and port included - alive with it.
+    const controller = new AbortController();
+    const { signal } = controller;
+    const add = vi.spyOn(signal, "addEventListener");
+    const remove = vi.spyOn(signal, "removeEventListener");
+    const storage = createSharedWorkerStorage({ port: createFakePort(), signal });
+
+    storage.dispose();
+
+    // Every listener the storage attached was handed back, so nothing of it is
+    // still reachable from a signal that may never abort.
+    const attached = add.mock.calls.map(([, listener]) => listener);
+    const detached = remove.mock.calls.map(([, listener]) => listener);
+    expect(attached).toHaveLength(1);
+    expect(detached).toEqual(attached);
+    // Aborting a signal the storage has let go of is still a no-op for it.
+    expect(() => {
+      controller.abort();
+    }).not.toThrow();
+  });
 });
 
 /**

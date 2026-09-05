@@ -426,9 +426,16 @@ export function createSharedWorkerStorage(
     });
   }
 
+  // Set below when a `signal` is supplied; detaches the abort listener so a
+  // manual `dispose()` doesn't leave this storage — its pending map and its
+  // closed port — reachable from a signal that may never abort.
+  let detachAbortListener: (() => void) | undefined;
+
   function dispose() {
     if (disposed) return;
     disposed = true;
+    detachAbortListener?.();
+    detachAbortListener = undefined;
     rejectPending(disposedError());
     closePort();
   }
@@ -455,10 +462,18 @@ export function createSharedWorkerStorage(
   };
 
   // Bind disposal to the caller's signal. `dispose` is idempotent, so an abort
-  // after a manual dispose (or vice versa) is harmless.
+  // after a manual dispose (or vice versa) is harmless. A manual dispose also
+  // removes the listener: the signal may outlive many storages — one
+  // long-lived controller shared by a component that remounts, say — and each
+  // listener left on it pins the storage it closes over.
   if (options.signal) {
-    if (options.signal.aborted) dispose();
-    else options.signal.addEventListener("abort", () => dispose(), { once: true });
+    const signal = options.signal;
+    if (signal.aborted) dispose();
+    else {
+      const onAbort = () => dispose();
+      signal.addEventListener("abort", onAbort, { once: true });
+      detachAbortListener = () => signal.removeEventListener("abort", onAbort);
+    }
   }
 
   return storage;
