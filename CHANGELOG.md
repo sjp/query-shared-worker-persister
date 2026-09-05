@@ -80,6 +80,12 @@ history, so they summarise the visible behaviour rather than every change.
   `"transport"` and the refusal as its `cause`, and leaves nothing behind. It previously
   rejected with the raw error and kept both the timeout timer and the request's bookkeeping
   entry, so a request that never left the tab was settled a second time at its deadline.
+- The worker answers a malformed message whose `kind` or `op` is a `bigint`, a cyclic object or
+  any other value that cannot be serialized to JSON. Describing such a value previously threw
+  out of the port's message handler, so the worker logged an uncaught exception and the sender
+  — which may be any same-origin script addressing the same worker — got no reply at all and
+  waited out its full timeout. Handling a message now also contains an unexpected failure of
+  any kind: it is logged and, when the message carried a usable `id`, answered as an error.
 
 ## [0.2.0] - 2026-06-03
 

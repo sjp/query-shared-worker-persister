@@ -19,8 +19,9 @@ Docs are local at `node_modules/vite-plus/docs` or online at https://viteplus.de
 
 The package publishes two entries, and the split between them runs through the whole source
 tree. The table is in that order: the tab side first, the worker side after, and the protocol
-they meet on in between. `src/worker/connection.ts` and `src/worker/store.ts` run inside the
-worker process; `src/worker/protocol.ts` is types only and is imported by both sides.
+they meet on in between. `src/worker/connection.ts`, `src/worker/store.ts` and
+`src/worker/describe-value.ts` run inside the worker process; `src/worker/protocol.ts` is types
+only and is imported by both sides.
 
 | File                                    | Role                                                                                                                              |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
@@ -31,6 +32,7 @@ worker process; `src/worker/protocol.ts` is types only and is imported by both s
 | `src/cache.worker.ts`                   | The worker entry. Holds the one `CacheStore` and hands each connecting port to `handleConnect`.                                   |
 | `src/worker/connection.ts`              | Validates incoming messages and answers them on a port. Transport-shaped but free of worker globals.                              |
 | `src/worker/store.ts`                   | The cache: a `Map<string, string>` and the operations over it. No transport, no globals.                                          |
+| `src/worker/describe-value.ts`          | Names an arbitrary value for a message or log without throwing on one JSON can't take.                                            |
 | `src/test-utils.ts`                     | Fakes shared by the test suites. Not a packaged entry.                                                                            |
 
 User-facing behaviour — what the options mean, what consumers have to do — lives in

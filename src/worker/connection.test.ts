@@ -108,6 +108,13 @@ describe("handleConnect", () => {
   });
 
   describe("malformed messages", () => {
+    /** An object that refers back to itself, as structured cloning permits. */
+    function cyclic(): Record<string, unknown> {
+      const value: Record<string, unknown> = {};
+      value.self = value;
+      return value;
+    }
+
     /** A port plus the messages it sent, wired to a fresh store. */
     function connect() {
       const sent: StorageResponse[] = [];
@@ -131,6 +138,13 @@ describe("handleConnect", () => {
       ["a non-string key", { kind: "request", id: 5, op: "getItem", key: 42 }],
       ["a missing key", { kind: "request", id: 5, op: "getItem" }],
       ["a non-string setItem value", { kind: "request", id: 5, op: "setItem", key: "k", value: 1 }],
+      // A bigint and a cycle both survive structured cloning and both defeat
+      // `JSON.stringify`, so they reach validation and must not fault it.
+      ["a bigint kind", { kind: 10n, id: 5, op: "getItem", key: "k" }],
+      ["a bigint op", { kind: "request", id: 5, op: 10n, key: "k" }],
+      ["a cyclic op", { kind: "request", id: 5, op: cyclic(), key: "k" }],
+      ["a function op", { kind: "request", id: 5, op: () => "getItem", key: "k" }],
+      ["a cyclic key", { kind: "request", id: 5, op: "getItem", key: cyclic() }],
     ])("replies ok:false for %s carrying an id", (_label, data) => {
       const { sent, deliver } = connect();
       deliver(data);
@@ -149,6 +163,8 @@ describe("handleConnect", () => {
       ["a non-numeric id", { kind: "request", id: "5", op: "getItem", key: "k" }],
       ["a non-object payload", "hello"],
       ["a null payload", null],
+      ["a bigint kind and no id", { kind: 10n, op: "getItem", key: "k" }],
+      ["a bigint id", { kind: "request", id: 5n, op: "getItem", key: "k" }],
     ])("logs and drops a message with %s", (_label, data) => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       try {
@@ -158,6 +174,53 @@ describe("handleConnect", () => {
         expect(warn).toHaveBeenCalledTimes(1);
       } finally {
         warn.mockRestore();
+      }
+    });
+
+    it("names an unserializable operation in the error it replies with", () => {
+      const { sent, deliver } = connect();
+      deliver({ kind: "request", id: 5, op: 10n, key: "k" });
+      expect(sent).toEqual([
+        { kind: "response", id: 5, ok: false, error: "Malformed request: unknown operation 10n" },
+      ]);
+    });
+
+    it("answers rather than throwing when reading the message itself fails", () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const { sent, deliver } = connect();
+        expect(() =>
+          deliver({
+            id: 5,
+            get kind(): never {
+              throw new Error("kaboom");
+            },
+          }),
+        ).not.toThrow();
+        expect(error).toHaveBeenCalledTimes(1);
+        expect(sent).toEqual([
+          { kind: "response", id: 5, ok: false, error: "Failed to handle request: kaboom" },
+        ]);
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it("logs and drops a message that fails to read and carries no id", () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const { sent, deliver } = connect();
+        expect(() =>
+          deliver({
+            get kind(): never {
+              throw new Error("kaboom");
+            },
+          }),
+        ).not.toThrow();
+        expect(error).toHaveBeenCalledTimes(1);
+        expect(sent).toEqual([]);
+      } finally {
+        error.mockRestore();
       }
     });
 

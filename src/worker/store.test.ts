@@ -110,5 +110,11 @@ describe("CacheStore", () => {
       } as unknown as StorageRequest;
       expect(() => store.handle(request)).toThrow(/clear/);
     });
+
+    it("names an operation that cannot be serialized rather than failing to describe it", () => {
+      const store = new CacheStore();
+      const request = { kind: "request", id: 1, op: 10n } as unknown as StorageRequest;
+      expect(() => store.handle(request)).toThrow("Unknown storage operation: 10n");
+    });
   });
 });

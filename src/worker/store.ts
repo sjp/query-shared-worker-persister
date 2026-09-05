@@ -1,3 +1,4 @@
+import { describeValue } from "./describe-value";
 import type { StorageEntries, StorageRequest, StorageResult } from "./protocol";
 
 /**
@@ -62,7 +63,7 @@ export class CacheStore {
         // `request` is `never` here, so read the operation back off the
         // unnarrowed value to name it in the error.
         const { op } = request as StorageRequest;
-        throw new Error(`Unknown storage operation: ${JSON.stringify(op)}`);
+        throw new Error(`Unknown storage operation: ${describeValue(op)}`);
       }
     }
   }

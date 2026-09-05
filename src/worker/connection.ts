@@ -1,3 +1,4 @@
+import { describeValue } from "./describe-value";
 import type { StorageRequest, StorageResponse } from "./protocol";
 import type { CacheStore } from "./store";
 
@@ -33,6 +34,21 @@ function asRecord(data: unknown): Record<string, unknown> | undefined {
 }
 
 /**
+ * The `id` a reply can be correlated to, or `undefined` when the message hasn't
+ * got a usable one. Reading the field is guarded because this is what the
+ * failure path uses to answer a message it could not otherwise make sense of:
+ * if the read itself threw, that path would have nothing left to fall back on.
+ */
+function readId(data: unknown): number | undefined {
+  try {
+    const id = asRecord(data)?.id;
+    return typeof id === "number" ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Explain why `data` isn't a request this worker can serve, or return
  * `undefined` when it is one. Every field the store reads is checked, so past
  * this point `data` can be treated as a {@link StorageRequest}: an unchecked
@@ -43,11 +59,11 @@ function describeInvalidRequest(data: unknown): string | undefined {
   const message = asRecord(data);
   if (!message) return `expected an object, received ${data === null ? "null" : typeof data}`;
   if (message.kind !== "request") {
-    return `expected kind "request", received ${JSON.stringify(message.kind)}`;
+    return `expected kind "request", received ${describeValue(message.kind)}`;
   }
   if (typeof message.id !== "number") return `id must be a number, received ${typeof message.id}`;
   if (!OPERATIONS.has(message.op as StorageRequest["op"])) {
-    return `unknown operation ${JSON.stringify(message.op)}`;
+    return `unknown operation ${describeValue(message.op)}`;
   }
   // `entries` addresses the whole store, so it is the one operation with no key
   // to check; requiring one would reject a well-formed request.
@@ -93,7 +109,9 @@ export function respond(
  * A message that isn't a well-formed request still gets an `ok: false` reply
  * whenever it carries a usable `id`, so the sender fails immediately instead of
  * waiting out its timeout. Without an `id` there is nothing to correlate a reply
- * to, so it is logged and dropped.
+ * to, so it is logged and dropped. Handling a message never throws back out to
+ * the port: an unexpected failure is logged and answered the same way, so one
+ * hostile or unlucky message cannot silence a request that was owed an answer.
  */
 export function handleConnect(
   store: Pick<CacheStore, "handle">,
@@ -102,19 +120,44 @@ export function handleConnect(
   if (!port) return;
   port.onmessage = (event) => {
     const data = event.data;
-    const reason = describeInvalidRequest(data);
-    if (reason === undefined) {
-      port.postMessage(respond(store, data as StorageRequest));
-      return;
-    }
-    const id = asRecord(data)?.id;
-    if (typeof id === "number") {
-      port.postMessage({ kind: "response", id, ok: false, error: `Malformed request: ${reason}` });
-    } else {
-      // Most likely another same-origin script talking to this worker rather
-      // than a fault of ours, so warn instead of erroring - but say so, since
-      // the alternative is a message vanishing without trace.
-      console.warn(`[${PACKAGE_NAME}] Ignoring an unrecognized message: ${reason}`);
+    try {
+      const reason = describeInvalidRequest(data);
+      if (reason === undefined) {
+        port.postMessage(respond(store, data as StorageRequest));
+        return;
+      }
+      const id = readId(data);
+      if (id !== undefined) {
+        port.postMessage({
+          kind: "response",
+          id,
+          ok: false,
+          error: `Malformed request: ${reason}`,
+        });
+      } else {
+        // Most likely another same-origin script talking to this worker rather
+        // than a fault of ours, so warn instead of erroring - but say so, since
+        // the alternative is a message vanishing without trace.
+        console.warn(`[${PACKAGE_NAME}] Ignoring an unrecognized message: ${reason}`);
+      }
+    } catch (err) {
+      // Nothing above is meant to throw - validation is written not to, and
+      // `respond` already turns a failing store into an error response - but an
+      // escaping throw would leave a sender that carried a usable `id` waiting
+      // out its whole timeout for a reply that is never coming, which is the
+      // outcome answering a bad message exists to avoid. So answer it anyway,
+      // and log, because reaching here at all is a fault worth seeing.
+      const error = err instanceof Error ? err.message : describeValue(err);
+      console.error(`[${PACKAGE_NAME}] Failed to handle an incoming message: ${error}`);
+      const id = readId(data);
+      if (id !== undefined) {
+        port.postMessage({
+          kind: "response",
+          id,
+          ok: false,
+          error: `Failed to handle request: ${error}`,
+        });
+      }
     }
   };
   port.onmessageerror = () => {
