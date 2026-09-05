@@ -27,6 +27,12 @@ happily produce a package from code that does not type check. CI therefore type 
 once in `check` and once in `build`; the second pass costs little and keeps `npm run build`
 trustworthy on its own.
 
+`npm run check:package` inspects what will actually be published: `publint` for manifest and
+file-layout mistakes, `attw` for entry points whose types and runtime code disagree. Both work
+off a real `npm pack` tarball, so run `build` first. `attw` runs under its `esm-only` profile
+because the package ships ESM only and expects a bundler, so its CommonJS and Node 10
+resolution complaints are reported but do not fail the run. CI runs this after `build`.
+
 ## Tests
 
 `vp test` runs two suites. The Node suite is the bulk of it: it drives the client and the
@@ -75,10 +81,10 @@ To cut a release:
 
 The tag triggers `.github/workflows/release.yml`, which refuses to go on if the tag and
 `package.json` disagree, then runs the same gates as CI (`check:toolchain`, `check`, `build`,
-`test`) before `npm publish --provenance --access public`. Authentication is npm trusted
-publishing over the job's OIDC token — there is no npm token in repository secrets, and the
-package must be configured for trusted publishing against this repository and workflow on
-npmjs.com for the publish step to be authorised.
+`check:package`, `test`) before `npm publish --provenance --access public`. Authentication is
+npm trusted publishing over the job's OIDC token — there is no npm token in repository
+secrets, and the package must be configured for trusted publishing against this repository and
+workflow on npmjs.com for the publish step to be authorised.
 
 Releases before this workflow existed were published by hand and were never tagged, so
 `v0.2.0` and earlier have no tag to compare against.

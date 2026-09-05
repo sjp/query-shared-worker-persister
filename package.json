@@ -2,7 +2,21 @@
   "name": "@sjpnz/query-shared-worker-persister",
   "version": "0.2.0",
   "description": "A persister for storing query data in a SharedWorker, to be used with TanStack/Query",
+  "keywords": [
+    "cache",
+    "cross-tab",
+    "persistence",
+    "persister",
+    "react-query",
+    "shared-worker",
+    "sharedworker",
+    "tanstack",
+    "tanstack-query"
+  ],
   "homepage": "https://github.com/sjp/query-shared-worker-persister",
+  "bugs": {
+    "url": "https://github.com/sjp/query-shared-worker-persister/issues"
+  },
   "license": "MIT",
   "author": {
     "name": "Simon Potter",
@@ -23,9 +37,11 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
-    "./cache.worker.js": "./dist/cache.worker.js"
+    "./cache.worker.js": "./dist/cache.worker.js",
+    "./package.json": "./package.json"
   },
   "publishConfig": {
     "access": "public",
@@ -35,6 +51,7 @@
     "build": "tsc && vp pack",
     "check": "vp check",
     "check:fix": "vp check --fix",
+    "check:package": "publint && attw --pack . --profile esm-only",
     "check:toolchain": "node scripts/check-vite-override.mjs",
     "lint": "vp lint",
     "playwright:install": "playwright install --with-deps chromium",
@@ -42,11 +59,13 @@
     "test:watch": "vp test"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
     "@tanstack/query-async-storage-persister": "^5.100.14",
     "@tanstack/query-core": "^5.102.8",
     "@tanstack/query-persist-client-core": "^5.56.2",
     "@vitest/browser-playwright": "4.1.11",
     "playwright": "^1.63.0",
+    "publint": "^0.3.24",
     "typescript": "^7.0.2",
     "vite-plus": "0.3.0"
   },
@@ -56,6 +75,9 @@
   },
   "overrides": {
     "vite": "npm:@voidzero-dev/vite-plus-core@0.3.0"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "packageManager": "npm@11.16.0"
 }

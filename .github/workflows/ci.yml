@@ -41,4 +41,8 @@ jobs:
       # suite loads the package out of `dist/` so that the worker asset and the
       # URL that finds it are covered too.
       - run: vp run build
+      # The export map and the emitted types are only checkable against a real
+      # tarball, so this runs on the freshly built `dist/`. The profile matches
+      # what the package supports: ESM through a bundler or a modern Node.
+      - run: vp run check:package
       - run: vp run test

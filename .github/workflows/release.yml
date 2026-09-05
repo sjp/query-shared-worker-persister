@@ -47,6 +47,7 @@ jobs:
       - run: vp run check:toolchain
       - run: vp run check
       - run: vp run build
+      - run: vp run check:package
       - run: vp run test
       # Trusted publishing and provenance need npm 11.5.1 or newer; take the
       # version the project already pins rather than whatever the runner ships.

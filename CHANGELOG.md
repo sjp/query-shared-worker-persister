@@ -21,6 +21,11 @@ history, so they summarise the visible behaviour rather than every change.
 - `PortAdapter` is exported, so the object the `port` option accepts can now be named. The
   protocol types it is written in terms of (`StorageRequest`, `StorageResponse`,
   `StorageResult`, `StorageEntries`) are exported by name rather than wholesale.
+- `./package.json` is exported, so tooling that reads a dependency's manifest through the
+  export map can reach it.
+- A `default` condition on the package entry, so resolvers whose condition set omits `import`
+  still find `dist/index.js`.
+- `keywords`, `bugs` and `engines` in the manifest.
 
 ### Changed
 
