@@ -43,8 +43,9 @@ export type SharedWorkerStorageErrorCode =
  *
  * - `unsupported` — there is no `SharedWorker` here, or the constructor refused
  *   the call. The storage handed back is the no-op one, so nothing is persisted.
- * - `transport` — the worker failed after it was constructed, or sent a message
- *   that could not be deserialized. The first of those is terminal.
+ * - `transport` — the worker failed after it was constructed, its connection was
+ *   closed because the worker went away, or it sent a message that could not be
+ *   deserialized. The first two are terminal.
  * - `timeout` — the worker did not answer within `timeoutMs`.
  * - `protocol` — the worker answered, but with an error, with a result that
  *   doesn't fit the operation it was sent, or in a protocol version this build
@@ -82,6 +83,13 @@ export interface PortAdapter {
   onmessage: ((event: MessageEvent<unknown>) => void) | null;
   /** Fired when an incoming message can't be deserialized. Real `MessagePort` has this. */
   onmessageerror?: ((event: MessageEvent) => void) | null;
+  /**
+   * Fired when the port at the other end is disconnected — the worker behind it
+   * terminated, crashed, or closed itself. A real `MessagePort` fires a `close`
+   * event at this handler in browsers that implement it; older ones simply never
+   * call it, and a fake is free to leave it out.
+   */
+  onclose?: ((event: Event) => void) | null;
   start?: () => void;
   /** Close the underlying port; called on disposal. Real `MessagePort` has this. */
   close?: () => void;
@@ -105,8 +113,8 @@ export interface SharedWorkerStorage extends AsyncStorage {
    * `"shared-worker"` when a transport was established, `"noop"` when one could
    * not be and this storage discards everything written to it — the fallback
    * taken when `SharedWorker` is missing or refuses to be constructed. Fixed for
-   * the life of the storage: a worker that fails *after* construction leaves
-   * this `"shared-worker"`, and is reported through
+   * the life of the storage: a worker that fails or goes away *after*
+   * construction leaves this `"shared-worker"`, and is reported through
    * {@link CreateSharedWorkerStorageOptions.onError} instead. A storage built
    * from an already-aborted signal opens no transport either, and names the one
    * it would have used.
@@ -413,6 +421,7 @@ export function createSharedWorkerStorage(
     connection.detach();
     connection.port.onmessage = null;
     connection.port.onmessageerror = null;
+    connection.port.onclose = null;
     connection.port.close?.();
   }
 
@@ -519,6 +528,19 @@ export function createSharedWorkerStorage(
           "transport",
           "SharedWorker sent a message that could not be deserialized",
         ),
+      );
+    };
+    // The worker going away after it started: terminated by the browser under
+    // memory pressure or after a crash, killed from devtools, or closing
+    // itself. `postMessage` on a port whose other end is gone is dropped in
+    // silence, so without this signal every later request would wait out its
+    // full timeout for an answer that can never come, for the life of the tab.
+    // It is as terminal as a worker that never started — there is no worker
+    // left to reconnect to, and a caller who wants another builds a new
+    // storage — so it takes the same path.
+    port.onclose = () => {
+      handleWorkerFailure(
+        new SharedWorkerStorageError("transport", "SharedWorker connection was closed"),
       );
     };
     port.start?.();

@@ -80,6 +80,16 @@ history, so they summarise the visible behaviour rather than every change.
   declared minimum could not use the `entries()` example at all. The two packages ship in
   lockstep from one repository, so `@tanstack/query-async-storage-persister` moves from
   `^5.100.14` to the same floor rather than keeping a higher one it never needed.
+- A worker that goes away after it started — terminated by the browser under memory pressure,
+  crashed, killed from devtools, or closing itself — is now noticed instead of being posted to
+  in silence. The port reports the closed connection, and it is treated as terminal in the same
+  way a worker that never started is: reported once as a `"transport"` error, with every later
+  write rejecting and every later read resolving empty. Previously nothing marked the transport
+  dead, so every request for the rest of the tab's life waited out the full `timeoutMs` first.
+  The signal is the port's `close` event, which not every browser fires yet; where it is
+  missing, those requests still fall to their timeout as they did before. Nothing reconnects: a
+  caller who wants persistence back builds a new storage or persister, which starts a new worker
+  with an empty store.
 - A worker that fails to load or start is now terminal: the failure is reported once, the port
   is closed, and every request made afterwards settles immediately with that error — writes
   rejecting, reads resolving empty — instead of each one being posted into the void and waiting

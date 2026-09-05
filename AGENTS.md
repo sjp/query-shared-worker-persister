@@ -183,7 +183,14 @@ project's `src/**/*.test.ts` glob, so adding another needs no configuration.
 The browser suite (`src/**/*.browser.test.ts`) runs in headless Chromium through Vitest's
 Playwright provider and covers only what a fake port cannot show — one worker process behind
 two connections, the `(scriptURL, name)` pair that decides which tabs share a store, what the
-browser does with a worker script that doesn't load, and a worker reached through `workerUrl`.
+browser does with a worker script that doesn't load, a worker that terminates itself once a tab
+has connected, and a worker reached through `workerUrl`. That termination case is why
+`vite.config.ts` launches the browser with `--enable-blink-features=MessagePortCloseEvent`:
+Chromium implements the port's `close` event, the only signal that a running worker has gone,
+behind that flag rather than shipping it on. The client needs no flag — a browser that never
+fires the event leaves those requests to their timeout, as they always did — but without it the
+event cannot be provoked here at all, so the test asserts the event exists before relying on
+it.
 It loads the package from `dist/`, so the packaging contract is covered too: `npm run build`
 first, or the suite fails saying so. Install the browser once with `npm run playwright:install`.
 

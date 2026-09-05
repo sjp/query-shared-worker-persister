@@ -290,6 +290,10 @@ The same fallback covers a `SharedWorker` that exists but refuses to be construc
 
 A worker that is available but fails to _start_ is a different matter — the usual cause is the worker asset not being copied into your bundle output, so its URL 404s. That failure is treated as terminal: the error is reported once, and every request from then on is answered immediately rather than hanging until the request timeout. Writes reject, so the failure reaches `createAsyncStoragePersister`'s `retry` hook and your own error handling; reads resolve empty, for the reason below.
 
+A worker can also stop _after_ it started: the browser reclaiming it under memory pressure, a crash, or a developer terminating it from devtools. Messages posted to a worker that is gone are dropped in silence, so the browser has to say the connection went — it does that with a `close` event on the port, which not every browser has yet. Where it is available, this is terminal in exactly the way a worker that never started is: the error is reported once as `transport`, and writes reject and reads resolve empty from then on instead of each request waiting out its `timeoutMs`. Where it isn't, nothing changes from earlier releases — those requests do wait out the timeout, one by one, for as long as the tab is open.
+
+Nothing reconnects on its own, and a long-lived application does not have to do anything either: TanStack Query's in-memory cache is untouched, so the app keeps working exactly as it does for a user whose browser has no `SharedWorker` at all — it just stops persisting and sharing. If you would rather have that back, rebuild it: take the `transport` report through [`onError`](#diagnostics), create a new persister (in React, remounting `PersistQueryClientProvider` under a new `key` is enough), and it constructs a worker again. That is a fresh start rather than a resume — the terminated worker took the shared store with it, so the new one begins empty and warms up from what tabs write from then on.
+
 If you'd rather branch on support yourself — for example to skip wiring up persistence entirely — use the exported check:
 
 ```typescript
@@ -372,13 +376,13 @@ const persister = createSharedWorkerPersister({
 
 Every failure this package raises is a `SharedWorkerStorageError` with a `code`, so you can branch on the cause rather than match on the message:
 
-| `code`        | What happened                                                                                                                            | Reported             |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
-| `unsupported` | No `SharedWorker`, or the constructor refused — a `workerUrl` it won't take included; the storage is the no-op one and persists nothing. | In a browser         |
-| `transport`   | The worker failed after construction (terminal), or sent a message that couldn't be deserialized.                                        | Yes                  |
-| `timeout`     | The worker didn't answer within `timeoutMs`.                                                                                             | If it stopped a read |
-| `protocol`    | The worker answered with an error, with a result that doesn't fit the request, or in a wire-protocol version this build doesn't speak.   | If it stopped a read |
-| `disposed`    | The call came after `dispose()`, or after the signal aborted.                                                                            | First read only      |
+| `code`        | What happened                                                                                                                                                     | Reported             |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| `unsupported` | No `SharedWorker`, or the constructor refused — a `workerUrl` it won't take included; the storage is the no-op one and persists nothing.                          | In a browser         |
+| `transport`   | The worker failed after construction, or its connection closed because the worker went away — both terminal — or it sent a message that couldn't be deserialized. | Yes                  |
+| `timeout`     | The worker didn't answer within `timeoutMs`.                                                                                                                      | If it stopped a read |
+| `protocol`    | The worker answered with an error, with a result that doesn't fit the request, or in a wire-protocol version this build doesn't speak.                            | If it stopped a read |
+| `disposed`    | The call came after `dispose()`, or after the signal aborted.                                                                                                     | First read only      |
 
 The same errors reach you as the rejection of a failed write, so a `retry` hook can read `code` too. Reads never reject ([why](#when-a-read-fails)), which is exactly why a failed read is reported: the error that stopped it is the report's `cause`, and the report carries that error's `code`. A write is not reported separately — its rejection already carries the error — and a terminal worker failure is reported once, no matter how many calls follow it. Reads made after disposal are reported once too: the first says that a released storage is still being read from, and later ones add nothing to it. A message that couldn't be deserialized is reported and nothing more: the port stays open, every request in flight settles on its own response, and only the request whose answer was lost falls to its timeout.
 
@@ -482,7 +486,7 @@ const storage = createSharedWorkerStorage({ port });
 const persister = createSharedWorkerPersister({ port });
 ```
 
-Every request carries an `id` and is answered by the response with the same `id`, so replies may arrive in any order; a request never answered is left to `timeoutMs`. Anything that isn't a well-formed `StorageResponse` is ignored, since a real shared worker's port is reachable by any same-origin script. `dispose()` calls `close()` on the port when it has one. Requests also carry the wire protocol's own `version`, and a response may echo it or leave it out, as the one above does — an omitted version is read as `1`. A response naming a version this build doesn't speak fails its request rather than being decoded, so a port that forwards to a real worker should pass the field through as it found it rather than write one of its own.
+Every request carries an `id` and is answered by the response with the same `id`, so replies may arrive in any order; a request never answered is left to `timeoutMs`. Anything that isn't a well-formed `StorageResponse` is ignored, since a real shared worker's port is reachable by any same-origin script. `dispose()` calls `close()` on the port when it has one. A port may also set `onclose`, which the storage assigns to be told that the transport is gone for good — a real `MessagePort` fires it when the worker behind it goes away — and every request from then on fails as a `transport` error rather than waiting out its timeout; a port that never calls it behaves exactly as before. Requests also carry the wire protocol's own `version`, and a response may echo it or leave it out, as the one above does — an omitted version is read as `1`. A response naming a version this build doesn't speak fails its request rather than being decoded, so a port that forwards to a real worker should pass the field through as it found it rather than write one of its own.
 
 This is mainly how the package's own tests drive the storage without a browser, and it is the seam to reach for when testing an application that persists through this package. It is not a plugin point for a different backing store: the worker's semantics — one store shared by every connected tab, last write wins — are what the rest of this document describes.
 
@@ -526,7 +530,7 @@ The two sides say which wire protocol they speak, so this can't be mistaken for 
 
 ### When a read fails
 
-Reads never reject. A `getItem` or `entries` the worker can't answer — a timeout, a worker that never started, an unreadable reply — resolves as though the store were empty, and reports a warning saying why.
+Reads never reject. A `getItem` or `entries` the worker can't answer — a timeout, a worker that never started, a worker that went away, an unreadable reply — resolves as though the store were empty, and reports a warning saying why.
 
 That is deliberate, and it is about the store being shared. `persistQueryClient` treats a restore that throws as a corrupt cache, and responds by calling `removeClient()`; here that deletes the entry inside the worker, which is the entry every other tab is living off. So a tab that was only slow to read — a heavy page, a tab throttled in the background, a worker starting while the machine is busy — would not just fail to warm itself, it would erase everyone else's cache. Resolving empty keeps the damage local: that tab fetches from the network, and the shared store is left alone.
 

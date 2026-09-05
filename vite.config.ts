@@ -66,7 +66,17 @@ export default defineConfig({
           browser: {
             enabled: true,
             headless: true,
-            provider: playwright(),
+            provider: playwright({
+              // A port whose worker has gone away reports it with a `close`
+              // event, which the client turns into a terminal transport
+              // failure. Chromium implements the event behind this flag rather
+              // than shipping it on by default, so the suite asks for it to
+              // cover that path against a real worker; the flag becomes a no-op
+              // once it ships, and the client needs no flag either way — a
+              // browser that never fires the event simply leaves those requests
+              // to their timeout, as they were before.
+              launchOptions: { args: ["--enable-blink-features=MessagePortCloseEvent"] },
+            }),
             // Nothing here renders, so a screenshot of a failure would only ever
             // be a blank page written into the source tree.
             screenshotFailures: false,

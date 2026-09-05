@@ -274,3 +274,51 @@ describe("a worker hosted at an explicit workerUrl", () => {
     );
   });
 });
+
+describe("a worker that stops after it started", () => {
+  /**
+   * A module SharedWorker that terminates itself the moment a tab connects,
+   * standing in for every way a running worker can go away — the browser
+   * reclaiming it, a crash, or a developer killing it from devtools. Built as a
+   * blob rather than a file in the source tree because it is a worker only this
+   * one test wants; the blob URL carries the page's own origin, so it is a
+   * worker script this page is allowed to load.
+   */
+  function closingWorkerUrl() {
+    const script = "self.onconnect = () => { self.close(); };";
+    return URL.createObjectURL(new Blob([script], { type: "text/javascript" }));
+  }
+
+  it("fails requests straight away and reports the closed connection once", async () => {
+    // Asserted rather than left to fail as a timeout: the whole test rests on
+    // this browser firing `close` at a port whose worker is gone, which it does
+    // only with the flag the browser project launches it with.
+    expect("onclose" in MessagePort.prototype).toBe(true);
+    const workerUrl = closingWorkerUrl();
+    const { reported, onError } = recorder();
+    try {
+      const storage = open({
+        workerUrl,
+        // Far above the test timeout, so nothing here can settle by timing out:
+        // a request that fails did so because the port reported the worker gone.
+        timeoutMs: 30_000,
+        onError,
+      });
+
+      const error = await rejectionFrom(
+        () => storage.setItem(uniqueKey("closed"), "v"),
+        bundle.SharedWorkerStorageError,
+      );
+
+      expect(error.code).toBe("transport");
+      // Terminal, like a worker that never started: a later read doesn't wait
+      // for an answer that can't come, and resolving it empty is not reported
+      // a second time.
+      await expect(storage.getItem(uniqueKey("closed"))).resolves.toBeNull();
+      expect(reported).toHaveLength(1);
+      expect(reported[0]?.code).toBe("transport");
+    } finally {
+      URL.revokeObjectURL(workerUrl);
+    }
+  });
+});

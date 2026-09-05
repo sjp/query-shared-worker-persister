@@ -322,3 +322,114 @@ describe("when the port refuses the message", () => {
     storage.dispose();
   });
 });
+
+describe("when the worker connection closes", () => {
+  /**
+   * A port that never answers and can report, as a real `MessagePort` does, that
+   * the port it was entangled with has gone: the worker terminated, crashed or
+   * closed itself. Nothing else settles a request through it, so a rejection
+   * that arrives can only have come from the close.
+   */
+  function createClosingPort() {
+    const postMessage = vi.fn<(request: StorageRequest) => void>();
+    const close = vi.fn<() => void>();
+    const port: PortAdapter = { onmessage: null, onclose: null, postMessage, close };
+    return { port, postMessage, close, closeFromWorker: () => port.onclose?.(new Event("close")) };
+  }
+
+  /** Build a storage over a fresh closing port and hand back both. */
+  async function withClosingPort(
+    fn: (
+      connection: ReturnType<typeof createClosingPort>,
+      storage: SharedWorkerStorage,
+      onError: (error: SharedWorkerStorageError) => void,
+    ) => Promise<void>,
+  ) {
+    const { reported, onError } = recorder();
+    const connection = createClosingPort();
+    // Far longer than the test could tolerate, so any rejection that arrives
+    // proves it came from the close rather than the timer.
+    const storage = createSharedWorkerStorage({
+      port: connection.port,
+      timeoutMs: 60_000,
+      onError,
+    });
+    await fn(connection, storage, onError);
+    storage.dispose();
+    return reported;
+  }
+
+  it("rejects the in-flight writes with the transport error", async () => {
+    await withClosingPort(async ({ closeFromWorker }, storage) => {
+      const inflight = storage.setItem("k", "v");
+      closeFromWorker();
+      const error = await rejectionFrom(() => inflight);
+      expect(error.code).toBe("transport");
+      expect(error.message).toMatch(/SharedWorker connection was closed/);
+    });
+  });
+
+  it("settles later requests immediately instead of waiting out the timeout", async () => {
+    await withClosingPort(async ({ closeFromWorker }, storage) => {
+      closeFromWorker();
+      await expect(storage.setItem("k", "v")).rejects.toThrow(/connection was closed/);
+      await expect(storage.removeItem("k")).rejects.toThrow(/connection was closed/);
+      // Reads answer just as promptly, but as an empty cache rather than an error.
+      await expect(storage.getItem("k")).resolves.toBeNull();
+      await expect(storage.entries()).resolves.toEqual([]);
+    });
+  });
+
+  it("stops posting to the closed port and closes this end of it", async () => {
+    await withClosingPort(async ({ port, postMessage, close, closeFromWorker }, storage) => {
+      closeFromWorker();
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(port.onmessage).toBeNull();
+      // Nothing of ours is left on the port, so a second close event — or one
+      // fired while the browser tears the port down — has nothing to reach.
+      expect(port.onclose).toBeNull();
+      postMessage.mockClear();
+      await expect(storage.setItem("k", "v")).rejects.toThrow(/connection was closed/);
+      expect(postMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  it("reports the close once however many requests follow", async () => {
+    const reported = await withClosingPort(async ({ closeFromWorker }, storage) => {
+      closeFromWorker();
+      await expect(
+        Promise.allSettled([storage.getItem("a"), storage.setItem("b", "1"), storage.entries()]),
+      ).resolves.toHaveLength(3);
+    });
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.code).toBe("transport");
+  });
+
+  it("says nothing when the port closes after the storage was disposed", async () => {
+    const { reported, onError } = recorder();
+    const { port, closeFromWorker } = createClosingPort();
+    const storage = createSharedWorkerStorage({ port, timeoutMs: 60_000, onError });
+
+    storage.dispose();
+    closeFromWorker();
+
+    expect(reported).toEqual([]);
+    // The storage still fails for the reason the caller gave it, rather than
+    // for a port that closed after they let go of it.
+    const failure = await rejectionFrom(() => storage.setItem("k", "v"));
+    expect(failure.code).toBe("disposed");
+    await expect(storage.getItem("k")).resolves.toBeNull();
+  });
+
+  it("leaves a port with no close hook working as it always did", async () => {
+    // Every other fake in these suites omits the hook, so this is what a
+    // browser without the event gets too: the transport stays live and only a
+    // timeout, a failure or disposal can settle a request.
+    const port = createFakePort();
+    expect(port).not.toHaveProperty("onclose");
+    const storage = createSharedWorkerStorage({ port });
+    await storage.setItem("k", "v");
+    await expect(storage.getItem("k")).resolves.toBe("v");
+    storage.dispose();
+  });
+});
