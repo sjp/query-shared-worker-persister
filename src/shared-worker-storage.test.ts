@@ -669,6 +669,12 @@ describe("no-op fallback when SharedWorker is unavailable", () => {
         expect(() => storage[Symbol.dispose]()).not.toThrow();
         expect(warn).toHaveBeenCalledTimes(1);
         expect(warn.mock.calls[0]?.[0]).toContain("access denied");
+        // The message is first so log filters keep matching, and the error
+        // itself follows, so devtools can expand its `code` and its `cause`.
+        const reported = warn.mock.calls[0]?.[1];
+        expect(reported).toBeInstanceOf(SharedWorkerStorageError);
+        expect((reported as SharedWorkerStorageError).code).toBe("unsupported");
+        expect((reported as SharedWorkerStorageError).cause).toBeInstanceOf(DOMException);
       });
     } finally {
       warn.mockRestore();

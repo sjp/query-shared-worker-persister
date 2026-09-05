@@ -700,6 +700,10 @@ export function createSharedWorkerStorage(
  * none. `level` picks the console method only; a caller taking these over gets
  * one channel and sorts by the error's `code`.
  *
+ * A console report is the prefixed message followed by the error itself, so a
+ * text filter still matches the line while devtools can expand the `code`, the
+ * `cause` and the stack behind it.
+ *
  * Never throws. Reporting is woven through paths that promise something to the
  * caller — a read resolving empty, a fatal failure closing the port and
  * rejecting what was in flight — and a reporter that threw would otherwise
@@ -713,7 +717,7 @@ function report(
   error: SharedWorkerStorageError,
 ): void {
   if (!options.onError) {
-    console[level](`[${PACKAGE_NAME}] ${error.message}`);
+    console[level](`[${PACKAGE_NAME}] ${error.message}`, error);
     return;
   }
   try {
