@@ -62,9 +62,9 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
-    "@tanstack/query-async-storage-persister": "^5.100.14",
+    "@tanstack/query-async-storage-persister": "^5.102.8",
     "@tanstack/query-core": "^5.102.8",
-    "@tanstack/query-persist-client-core": "^5.56.2",
+    "@tanstack/query-persist-client-core": "^5.102.8",
     "@vitest/browser-playwright": "4.1.11",
     "playwright": "^1.63.0",
     "publint": "^0.3.24",
@@ -72,8 +72,8 @@
     "vite-plus": "0.3.0"
   },
   "peerDependencies": {
-    "@tanstack/query-async-storage-persister": "^5.100.14",
-    "@tanstack/query-persist-client-core": "^5.56.2"
+    "@tanstack/query-async-storage-persister": "^5.80.5",
+    "@tanstack/query-persist-client-core": "^5.80.5"
   },
   "overrides": {
     "vite": "npm:@voidzero-dev/vite-plus-core@0.3.0"

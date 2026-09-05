@@ -37,6 +37,9 @@ your TanStack Query version. `@tanstack/react-query-persist-client` already brin
 `@tanstack/query-persist-client-core`, and npm installs missing peers automatically, so the command above is usually
 all that is needed.
 
+TanStack Query 5.80.5 or newer is required. That is the first release whose persistence packages carry the
+per-query persister API this package's `entries()` is written for, including `restoreQueries`.
+
 The recommended cross-tab broadcasting plugin is a separate, optional install:
 
 ```shell

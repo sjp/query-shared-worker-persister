@@ -54,6 +54,12 @@ history, so they summarise the visible behaviour rather than every change.
 - `@tanstack/query-async-storage-persister` and `@tanstack/query-persist-client-core` are now
   peer dependencies. The published types import from them instead of inlining private copies,
   so a consuming project must have both installed.
+- Both TanStack peer ranges are now `^5.80.5`. The `@tanstack/query-persist-client-core` floor
+  was `^5.56.2`, which predates the per-query persister this package documents:
+  `AsyncStorage.entries` arrived in 5.76.1 and `restoreQueries` in 5.80.5, so a project at the
+  declared minimum could not use the `entries()` example at all. The two packages ship in
+  lockstep from one repository, so `@tanstack/query-async-storage-persister` moves from
+  `^5.100.14` to the same floor rather than keeping a higher one it never needed.
 - A worker that fails to load or start is now terminal: the failure is reported once, the port
   is closed, and every request made afterwards settles immediately with that error — writes
   rejecting, reads resolving empty — instead of each one being posted into the void and waiting
