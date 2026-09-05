@@ -28,8 +28,14 @@ The source for the react application is available on [GitHub](https://github.com
 Install the package in your project using `npm`, alongside Tanstack Query's persistence package for React:
 
 ```shell
-npm install @sjpnz/query-shared-worker-persister @tanstack/react-query-persist-client
+npm install @sjpnz/query-shared-worker-persister @tanstack/react-query-persist-client @tanstack/query-async-storage-persister
 ```
+
+`@tanstack/query-async-storage-persister` and `@tanstack/query-persist-client-core` are peer dependencies: this
+package's public types are expressed in terms of them, so your project supplies the single copy that has to match
+your TanStack Query version. `@tanstack/react-query-persist-client` already brings in
+`@tanstack/query-persist-client-core`, and npm installs missing peers automatically, so the command above is usually
+all that is needed.
 
 The recommended cross-tab broadcasting plugin is a separate, optional install:
 
