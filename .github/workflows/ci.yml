@@ -25,7 +25,20 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: true
       - run: vp install --frozen-lockfile
+      # The browser suite drives a real Chromium. Cache the download, which is
+      # far larger and slower to fetch than the npm dependencies; the key tracks
+      # the lockfile because that is where the Playwright version lives.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: playwright-${{ runner.os }}-
+      - run: vp run playwright:install
       - run: vp run check:toolchain
       - run: vp run check
+      # Before the tests, and not only to catch build failures early: the browser
+      # suite loads the package out of `dist/` so that the worker asset and the
+      # URL that finds it are covered too.
       - run: vp run build
       - run: vp run test

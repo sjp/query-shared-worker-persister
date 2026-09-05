@@ -27,6 +27,18 @@ happily produce a package from code that does not type check. CI therefore type 
 once in `check` and once in `build`; the second pass costs little and keeps `npm run build`
 trustworthy on its own.
 
+## Tests
+
+`vp test` runs two suites. The Node suite is the bulk of it: it drives the client and the
+worker through fake ports, which is where behaviour like timeouts, disposal and malformed
+messages can be provoked directly.
+
+The browser suite (`src/**/*.browser.test.ts`) runs in headless Chromium through Vitest's
+Playwright provider and covers only what a fake port cannot show — one worker process behind
+two connections, and the `(scriptURL, name)` pair that decides which tabs share a store. It
+loads the package from `dist/`, so the packaging contract is covered too: `npm run build`
+first, or the suite fails saying so. Install the browser once with `npm run playwright:install`.
+
 ## Upgrading Vite+
 
 `package.json` aliases `vite` to Vite+'s own fork of it:

@@ -33,6 +33,7 @@
     "check:fix": "vp check --fix",
     "check:toolchain": "node scripts/check-vite-override.mjs",
     "lint": "vp lint",
+    "playwright:install": "playwright install --with-deps chromium",
     "test": "vp test run",
     "test:watch": "vp test"
   },
@@ -40,6 +41,8 @@
     "@tanstack/query-async-storage-persister": "^5.100.14",
     "@tanstack/query-core": "^5.102.8",
     "@tanstack/query-persist-client-core": "^5.56.2",
+    "@vitest/browser-playwright": "4.1.11",
+    "playwright": "^1.63.0",
     "typescript": "^7.0.2",
     "vite-plus": "0.3.0"
   },

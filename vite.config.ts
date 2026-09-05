@@ -1,3 +1,4 @@
+import { playwright } from "vite-plus/test/browser-playwright";
 import { defineConfig } from "vite-plus";
 
 export default defineConfig({
@@ -19,5 +20,42 @@ export default defineConfig({
     platform: "browser",
     format: ["esm"],
     dts: true,
+  },
+  // Two suites, because they answer different questions. The Node suite drives
+  // the code through fake ports and covers the logic exhaustively; the browser
+  // suite runs a handful of cases against a genuine SharedWorker in Chromium,
+  // where the things a fake can't fake — one process shared by two ports, the
+  // `(scriptURL, name)` identity, a closed port — are real.
+  test: {
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "node",
+          include: ["src/**/*.test.ts"],
+          exclude: ["**/node_modules/**", "src/**/*.browser.test.ts"],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "browser",
+          include: ["src/**/*.browser.test.ts"],
+          browser: {
+            enabled: true,
+            headless: true,
+            provider: playwright(),
+            // Nothing here renders, so a screenshot of a failure would only ever
+            // be a blank page written into the source tree.
+            screenshotFailures: false,
+            // Chromium alone: Chrome is the primary target, and the suite is
+            // checking our own worker plumbing rather than per-engine SharedWorker
+            // behaviour. Safari has no SharedWorker at all, which is the case the
+            // no-op fallback covers in the Node suite.
+            instances: [{ browser: "chromium" }],
+          },
+        },
+      },
+    ],
   },
 });
