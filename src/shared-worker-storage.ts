@@ -6,6 +6,42 @@ import type {
   StorageResult,
 } from "./worker/protocol";
 
+/** Which kind of failure a {@link SharedWorkerStorageError} describes. */
+export type SharedWorkerStorageErrorCode =
+  | "unsupported"
+  | "transport"
+  | "timeout"
+  | "protocol"
+  | "disposed";
+
+/**
+ * Every failure this package raises or reports, tagged with a `code` so callers
+ * can branch on the cause instead of matching on message text:
+ *
+ * - `unsupported` — there is no `SharedWorker` here, or the constructor refused
+ *   the call. The storage handed back is the no-op one, so nothing is persisted.
+ * - `transport` — the worker failed after it was constructed, or sent a message
+ *   that could not be deserialized. The first of those is terminal.
+ * - `timeout` — the worker did not answer within `timeoutMs`.
+ * - `protocol` — the worker answered, but with an error or with a result that
+ *   doesn't fit the operation it was sent.
+ * - `disposed` — the request was made after `dispose()`.
+ *
+ * These reach a caller two ways: as the rejection of a write, and through
+ * {@link CreateSharedWorkerStorageOptions.onError}. Where one failure was caused
+ * by another — the `DOMException` from a refused constructor, or the request
+ * failure behind a read that resolved empty — that other error is the `cause`.
+ */
+export class SharedWorkerStorageError extends Error {
+  readonly code: SharedWorkerStorageErrorCode;
+
+  constructor(code: SharedWorkerStorageErrorCode, message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "SharedWorkerStorageError";
+    this.code = code;
+  }
+}
+
 /**
  * The minimal `MessagePort` surface this package uses. A real `SharedWorker`
  * port satisfies it, and so does anything else that can carry a
@@ -39,6 +75,15 @@ export interface SharedWorkerStorage extends AsyncStorage {
    * resolves empty.
    */
   entries: () => Promise<StorageEntries>;
+  /**
+   * `"shared-worker"` when a transport was established, `"noop"` when one could
+   * not be and this storage discards everything written to it — the fallback
+   * taken when `SharedWorker` is missing or refuses to be constructed. Fixed for
+   * the life of the storage: a worker that fails *after* construction leaves
+   * this `"shared-worker"`, and is reported through
+   * {@link CreateSharedWorkerStorageOptions.onError} instead.
+   */
+  readonly mode: "shared-worker" | "noop";
   /**
    * Detach the port handler and settle any in-flight requests. Idempotent: a
    * second call does nothing. Once disposed the storage stays disposed: later
@@ -103,6 +148,22 @@ export interface CreateSharedWorkerStorageOptions {
    * falls back to no-op. Disposal still closes the port if it has a `close`.
    */
   port?: PortAdapter | undefined;
+  /**
+   * Take the warnings and errors this package would otherwise write to the
+   * console: the no-op fallback, a worker that failed, a read that resolved
+   * empty because nothing could answer it. Supplying this replaces the console
+   * output entirely, so a structured logger or an error reporter can receive
+   * them instead — and `() => {}` is how you silence them.
+   *
+   * Each error carries a {@link SharedWorkerStorageError.code} saying which kind
+   * of failure it was; the `"unsupported"` one is the report that says the
+   * storage you were handed persists nothing.
+   *
+   * Purely diagnostic — what is reported here doesn't change how any call
+   * settles. A failed write isn't reported, since its rejection already carries
+   * the error; a failed read is, because resolving empty hides it.
+   */
+  onError?: ((error: SharedWorkerStorageError) => void) | undefined;
 }
 
 /** `Omit` that distributes over a union, preserving per-variant fields like `value`. */
@@ -142,21 +203,26 @@ export function isSharedWorkerSupported(): boolean {
  * `SharedWorker` is unavailable (e.g. Chrome on Android, some webviews) — or is
  * present but refuses to be constructed, as on an opaque origin — it falls back
  * to a no-op storage — TanStack Query then runs with its normal in-memory cache
- * and no cross-tab persistence — and logs a single warning. Use
- * {@link isSharedWorkerSupported} to detect and branch before reaching this.
+ * and no cross-tab persistence — and reports it once. Use
+ * {@link isSharedWorkerSupported} to detect and branch before reaching this, or
+ * read `mode` on the result to see which storage you were given.
  *
  * If the worker fails to start — most often because its asset URL didn't resolve
  * in the consumer's bundle, which `workerUrl` exists to work around — the failure
- * is permanent: the error is logged once,
+ * is permanent: the error is reported once,
  * the port is closed, and every write from then on rejects with that same
  * error straight away rather than waiting out `timeoutMs`. A single
  * undeserializable response is treated as the lesser fault it is: the in-flight
  * requests settle, but the port stays open and later requests may still succeed.
  *
  * Reads (`getItem` and `entries`) never reject at all: a read the worker
- * couldn't answer resolves empty and is logged, so an unreachable cache looks
+ * couldn't answer resolves empty and is reported, so an unreachable cache looks
  * like an empty one rather than a corrupt one — which `persistQueryClient`
  * would answer by clearing the entry for every tab.
+ *
+ * Everything reported goes to the console unless `onError` is supplied, in which
+ * case it goes there and the console is left alone. Each report is a
+ * {@link SharedWorkerStorageError} carrying a `code` for the kind of failure.
  */
 export function createSharedWorkerStorage(
   options: CreateSharedWorkerStorageOptions = {},
@@ -164,10 +230,15 @@ export function createSharedWorkerStorage(
   const { timeoutMs = 10_000 } = options;
 
   if (!options.port && !isSharedWorkerSupported()) {
-    console.warn(
-      `[${PACKAGE_NAME}] SharedWorker is unavailable in this environment; ` +
-        "falling back to no-op storage. The query cache will not be persisted or " +
-        "shared across tabs. Use isSharedWorkerSupported() to branch beforehand.",
+    report(
+      options,
+      "warn",
+      new SharedWorkerStorageError(
+        "unsupported",
+        "SharedWorker is unavailable in this environment; falling back to no-op " +
+          "storage. The query cache will not be persisted or shared across tabs. " +
+          "Use isSharedWorkerSupported() to branch beforehand.",
+      ),
     );
     return createNoopStorage();
   }
@@ -177,9 +248,9 @@ export function createSharedWorkerStorage(
   let disposed = false;
   let closed = false;
   // Set once the transport is beyond recovery; every later request rejects with it.
-  let fatalError: Error | undefined;
+  let fatalError: SharedWorkerStorageError | undefined;
 
-  function rejectPending(error: Error) {
+  function rejectPending(error: SharedWorkerStorageError) {
     for (const entry of pending.values()) {
       clearTimeout(entry.timer);
       entry.reject(error);
@@ -198,7 +269,7 @@ export function createSharedWorkerStorage(
 
   // A transport-level failure can't be tied to a single request id, so reject
   // everything in flight rather than letting each call hang until its timeout.
-  // Logged too, since the most likely cause — a misresolved worker asset URL —
+  // Reported too, since the most likely cause — a misresolved worker asset URL —
   // is otherwise invisible until the 10s timeout.
   //
   // The two failures differ in how much they condemn: a message that can't be
@@ -206,11 +277,11 @@ export function createSharedWorkerStorage(
   // requests are free to succeed, while the worker itself failing means there is
   // nothing left to talk to. The latter is `fatal`: the port is closed and every
   // subsequent request rejects immediately with this same error instead of
-  // posting into the void and waiting out its timeout. The error is logged here
-  // and only here, so a fatal failure reports once no matter how many requests
-  // follow it.
-  function handleTransportError(error: Error, fatal: boolean) {
-    console.error(`[${PACKAGE_NAME}] ${error.message}`);
+  // posting into the void and waiting out its timeout. The error is reported
+  // here and only here, so a fatal failure is reported once no matter how many
+  // requests follow it.
+  function handleTransportError(error: SharedWorkerStorageError, fatal: boolean) {
+    report(options, "error", error);
     if (fatal) {
       fatalError = error;
       closePort();
@@ -244,14 +315,24 @@ export function createSharedWorkerStorage(
       // keeps a reply from resolving `getItem` with an array, or `entries` with
       // a bare string, in a caller that has no reason to expect either.
       if (matchesOperation(entry.op, message.result)) entry.resolve(message.result);
-      else entry.reject(new Error(`SharedWorker returned an unexpected ${entry.op} result`));
+      else {
+        entry.reject(
+          new SharedWorkerStorageError(
+            "protocol",
+            `SharedWorker returned an unexpected ${entry.op} result`,
+          ),
+        );
+      }
     } else {
-      entry.reject(new Error(message.error));
+      entry.reject(new SharedWorkerStorageError("protocol", message.error));
     }
   };
   port.onmessageerror = () => {
     handleTransportError(
-      new Error("SharedWorker sent a message that could not be deserialized"),
+      new SharedWorkerStorageError(
+        "transport",
+        "SharedWorker sent a message that could not be deserialized",
+      ),
       false,
     );
   };
@@ -264,7 +345,7 @@ export function createSharedWorkerStorage(
     // fast instead. Writes reject rather than resolve, so one that never reached
     // the worker is surfaced to `createAsyncStoragePersister`'s `retry` hook;
     // `read` converts the same rejection into an empty result for reads.
-    if (disposed) return Promise.reject(new Error("SharedWorker storage disposed"));
+    if (disposed) return Promise.reject(disposedError());
     // Likewise once the worker has failed: there is no port left to answer, so
     // hand back the transport error that explains why rather than a timeout that
     // doesn't.
@@ -274,7 +355,12 @@ export function createSharedWorkerStorage(
     return new Promise<StorageResult>((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
-        reject(new Error(`SharedWorker storage request timed out after ${timeoutMs}ms`));
+        reject(
+          new SharedWorkerStorageError(
+            "timeout",
+            `SharedWorker storage request timed out after ${timeoutMs}ms`,
+          ),
+        );
       }, timeoutMs);
       pending.set(id, { op: message.op, resolve, reject, timer });
       port.postMessage({ ...message, id } as StorageRequest);
@@ -310,9 +396,17 @@ export function createSharedWorkerStorage(
       // still says why.
       if (error !== fatalError) {
         const reason = error instanceof Error ? error.message : String(error);
-        console.warn(
-          `[${PACKAGE_NAME}] Could not read from the SharedWorker cache (${reason}); ` +
-            "continuing as though it were empty.",
+        // Reported under the code of the failure behind it, which is also kept
+        // as the `cause`: a caller filtering on `timeout` wants this read too.
+        report(
+          options,
+          "warn",
+          new SharedWorkerStorageError(
+            error instanceof SharedWorkerStorageError ? error.code : "transport",
+            `Could not read from the SharedWorker cache (${reason}); ` +
+              "continuing as though it were empty.",
+            { cause: error },
+          ),
         );
       }
       return empty;
@@ -324,6 +418,7 @@ export function createSharedWorkerStorage(
   // result that matched the operation it was sent for, and a read that failed
   // falls back to the empty value of that same shape.
   const storage: SharedWorkerStorage = {
+    mode: "shared-worker",
     getItem: (key) => read({ kind: "request", op: "getItem", key }, null) as Promise<string | null>,
     entries: () => read({ kind: "request", op: "entries" }, []) as Promise<StorageEntries>,
     setItem: async (key, value) => {
@@ -335,7 +430,7 @@ export function createSharedWorkerStorage(
     dispose: () => {
       if (disposed) return;
       disposed = true;
-      rejectPending(new Error("SharedWorker storage disposed"));
+      rejectPending(disposedError());
       closePort();
     },
   };
@@ -350,8 +445,27 @@ export function createSharedWorkerStorage(
   return storage;
 }
 
-/** Used to prefix the console warning so it's traceable to this package. */
+/** Prefixes console output so a line is traceable to this package. */
 const PACKAGE_NAME = "@sjpnz/query-shared-worker-persister";
+
+/**
+ * Send a diagnostic to the caller's `onError`, or to the console when there is
+ * none. `level` picks the console method only; a caller taking these over gets
+ * one channel and sorts by the error's `code`.
+ */
+function report(
+  options: CreateSharedWorkerStorageOptions,
+  level: "warn" | "error",
+  error: SharedWorkerStorageError,
+): void {
+  if (options.onError) options.onError(error);
+  else console[level](`[${PACKAGE_NAME}] ${error.message}`);
+}
+
+/** The rejection every request made after `dispose()` gets. */
+function disposedError(): SharedWorkerStorageError {
+  return new SharedWorkerStorageError("disposed", "SharedWorker storage disposed");
+}
 
 /**
  * Whether `data` is a well-formed {@link StorageResponse}. Checked field by
@@ -402,6 +516,7 @@ function matchesOperation(op: StorageRequest["op"], result: StorageResult): bool
  */
 function createNoopStorage(): SharedWorkerStorage {
   return {
+    mode: "noop",
     getItem: () => Promise.resolve(null),
     entries: () => Promise.resolve([]),
     setItem: () => Promise.resolve(),
@@ -421,13 +536,14 @@ const WORKER_NAME = "TANSTACK_QUERY_SHARED_CACHE_WORKER";
  * Instantiate the shared `cache.worker.ts` and return its port, or `undefined`
  * if the constructor rejected the call — an opaque origin, a `blob:`/`data:`/
  * `file:` document, or a policy that disables workers all expose `SharedWorker`
- * and then throw on construction. That is reported with the same warning an
- * unsupported environment gets, and the caller degrades to no-op storage.
+ * and then throw on construction. That is reported like an unsupported
+ * environment, under the same `unsupported` code, and the caller degrades to
+ * no-op storage.
  * Callers must still have confirmed support (see
  * {@link isSharedWorkerSupported}); reaching here without `SharedWorker` at all
  * would throw a raw `ReferenceError`.
  *
- * `onError` is invoked if the worker itself fails *after* construction (most
+ * `onFatal` is invoked if the worker itself fails *after* construction (most
  * commonly because its asset URL didn't resolve in the consumer's bundle, which
  * `workerUrl` overrides) so the
  * storage can fail pending requests fast instead of waiting for each to time
@@ -436,7 +552,7 @@ const WORKER_NAME = "TANSTACK_QUERY_SHARED_CACHE_WORKER";
  */
 function connectSharedWorker(
   options: CreateSharedWorkerStorageOptions,
-  onError?: (error: Error) => void,
+  onFatal?: (error: SharedWorkerStorageError) => void,
 ): PortAdapter | undefined {
   // This package builds with `vp pack` (tsdown), which ships `cache.worker.ts`
   // as its own sibling entry (`dist/cache.worker.js`) and leaves this
@@ -462,16 +578,27 @@ function connectSharedWorker(
       name: namespace ? `${WORKER_NAME}:${namespace}` : WORKER_NAME,
     });
   } catch (cause) {
-    console.warn(
-      `[${PACKAGE_NAME}] SharedWorker could not be created in this environment ` +
-        `(${cause instanceof Error ? cause.message : String(cause)}); falling back ` +
-        "to no-op storage. The query cache will not be persisted or shared across " +
-        "tabs.",
+    report(
+      options,
+      "warn",
+      new SharedWorkerStorageError(
+        "unsupported",
+        "SharedWorker could not be created in this environment " +
+          `(${cause instanceof Error ? cause.message : String(cause)}); falling back ` +
+          "to no-op storage. The query cache will not be persisted or shared across " +
+          "tabs.",
+        { cause },
+      ),
     );
     return undefined;
   }
   worker.onerror = (event) => {
-    onError?.(new Error(`SharedWorker failed: ${event.message || "worker could not be started"}`));
+    onFatal?.(
+      new SharedWorkerStorageError(
+        "transport",
+        `SharedWorker failed: ${event.message || "worker could not be started"}`,
+      ),
+    );
   };
   return worker.port;
 }

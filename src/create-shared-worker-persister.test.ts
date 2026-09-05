@@ -8,6 +8,7 @@ import {
   createSharedWorkerPersister,
   type CreateSharedWorkerPersisterOptions,
 } from "./create-shared-worker-persister";
+import type { SharedWorkerStorageError } from "./shared-worker-storage";
 import { fakeSharedWorker, withSharedWorker } from "./test-utils";
 
 /** A minimal client to persist; the persister only ever serializes it. */
@@ -41,6 +42,20 @@ describe("createSharedWorkerPersister", () => {
       // 20ms can only have come from the option being passed through.
       await expect(persister.removeClient()).rejects.toThrow(/timed out after 20ms/);
     });
+  });
+
+  it("forwards onError, so the storage's diagnostics reach the caller", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const reported: SharedWorkerStorageError[] = [];
+      await withSharedWorker(undefined, () => {
+        createSharedWorkerPersister({ onError: (error) => void reported.push(error) });
+      });
+      expect(reported.map((error) => error.code)).toEqual(["unsupported"]);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("forwards namespace as a dedicated worker name", async () => {

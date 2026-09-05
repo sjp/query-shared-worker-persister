@@ -7,6 +7,7 @@ import {
   isSharedWorkerSupported,
   type PortAdapter,
   type SharedWorkerStorage,
+  SharedWorkerStorageError,
 } from "./shared-worker-storage";
 import { createFakePort, fakeSharedWorker, withSharedWorker } from "./test-utils";
 import type { StorageRequest, StorageResponse } from "./worker/protocol";
@@ -526,5 +527,172 @@ describe("per-query persistence", () => {
     expect(restored.getQueryData(["user", 2])).toEqual({ name: "Grace" });
 
     storage.dispose();
+  });
+});
+
+/**
+ * Nothing here is decoration: an application with structured logging, an error
+ * reporter, or a rule against console output in production has to be able to
+ * take these reports, and a cache that has quietly degraded to no-op has to be
+ * something code can notice rather than a string in a devtools panel.
+ */
+describe("diagnostics", () => {
+  /** A callback that records what it was given, plus the list it records into. */
+  function recorder() {
+    const reported: SharedWorkerStorageError[] = [];
+    return { reported, onError: (error: SharedWorkerStorageError) => void reported.push(error) };
+  }
+
+  /** The error a call rejected with, asserted to be one of ours. */
+  async function rejectionFrom(call: () => unknown): Promise<SharedWorkerStorageError> {
+    const error = await Promise.resolve(call()).then(
+      () => undefined,
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(SharedWorkerStorageError);
+    return error as SharedWorkerStorageError;
+  }
+
+  /** Run `fn` with both console channels spied on, and hand it the spies. */
+  async function withSilentConsole(
+    fn: (console: {
+      warn: ReturnType<typeof vi.spyOn>;
+      error: ReturnType<typeof vi.spyOn>;
+    }) => Promise<void>,
+  ) {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await fn({ warn, error });
+    } finally {
+      error.mockRestore();
+      warn.mockRestore();
+    }
+  }
+
+  it("reports the unsupported fallback to onError instead of the console", async () => {
+    const { reported, onError } = recorder();
+    await withSilentConsole(async (spies) => {
+      await withSharedWorker(undefined, () => {
+        const storage = createSharedWorkerStorage({ onError });
+        expect(storage.mode).toBe("noop");
+      });
+      expect(spies.warn).not.toHaveBeenCalled();
+    });
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.code).toBe("unsupported");
+    expect(reported[0]?.message).toContain("no-op storage");
+  });
+
+  it("reports a constructor that refuses the call, keeping the refusal as the cause", async () => {
+    class ThrowingSharedWorker {
+      constructor() {
+        throw new DOMException("access denied", "SecurityError");
+      }
+    }
+    const { reported, onError } = recorder();
+    await withSilentConsole(async (spies) => {
+      await withSharedWorker(ThrowingSharedWorker, () => {
+        expect(createSharedWorkerStorage({ onError }).mode).toBe("noop");
+      });
+      expect(spies.warn).not.toHaveBeenCalled();
+    });
+    expect(reported[0]?.code).toBe("unsupported");
+    expect((reported[0]?.cause as Error | undefined)?.message).toBe("access denied");
+  });
+
+  it("reports a worker that fails after construction once, and rejects with that error", async () => {
+    const { reported, onError } = recorder();
+    await withSilentConsole(async (spies) => {
+      const worker = fakeSharedWorker({ dead: true });
+      await withSharedWorker(worker.FakeSharedWorker, async () => {
+        // Longer a timeout than the test could tolerate, so anything that
+        // settles proves it came from the failure rather than the timer.
+        const storage = createSharedWorkerStorage({ onError, timeoutMs: 60_000 });
+        expect(storage.mode).toBe("shared-worker");
+        worker.latest.fail("404");
+        // The report and the rejection are the same error, so a reporter and a
+        // `retry` hook are looking at one failure rather than two descriptions.
+        await expect(storage.setItem("k", "v")).rejects.toBe(reported[0]);
+        // A read that fell back to empty because of that same failure is not
+        // reported again - one dead worker, one report.
+        await expect(storage.getItem("k")).resolves.toBeNull();
+        storage.dispose();
+      });
+      expect(spies.error).not.toHaveBeenCalled();
+      expect(spies.warn).not.toHaveBeenCalled();
+    });
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.code).toBe("transport");
+    expect(reported[0]?.message).toContain("404");
+  });
+
+  it("reports an undeserializable message as a non-terminal transport failure", async () => {
+    const { reported, onError } = recorder();
+    await withSilentConsole(async (spies) => {
+      const port = createFakePort();
+      const storage = createSharedWorkerStorage({ port, onError });
+      port.onmessageerror?.({} as MessageEvent);
+      await storage.setItem("k", "v");
+      expect(spies.error).not.toHaveBeenCalled();
+      storage.dispose();
+    });
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.code).toBe("transport");
+  });
+
+  it("reports a read that resolved empty, under the code of what stopped it", async () => {
+    const { reported, onError } = recorder();
+    await withSilentConsole(async (spies) => {
+      const storage = createSharedWorkerStorage({ port: createDeadPort(), timeoutMs: 20, onError });
+      await expect(storage.getItem("k")).resolves.toBeNull();
+      await expect(storage.entries()).resolves.toEqual([]);
+      expect(spies.warn).not.toHaveBeenCalled();
+      storage.dispose();
+    });
+    expect(reported).toHaveLength(2);
+    expect(reported.map((error) => error.code)).toEqual(["timeout", "timeout"]);
+    // The read that gave up is described, and the failure it gave up on is kept.
+    expect(reported[0]?.message).toContain("continuing as though it were empty");
+    expect((reported[0]?.cause as SharedWorkerStorageError | undefined)?.code).toBe("timeout");
+  });
+
+  it("leaves the console alone in the paths that report nothing", async () => {
+    const { reported, onError } = recorder();
+    const storage = createSharedWorkerStorage({ port: createFakePort(), onError });
+    await storage.setItem("k", "v");
+    await expect(storage.getItem("k")).resolves.toBe("v");
+    storage.dispose();
+    expect(reported).toEqual([]);
+  });
+
+  it("tags a write the worker never answered as a timeout", async () => {
+    const storage = createSharedWorkerStorage({ port: createDeadPort(), timeoutMs: 20 });
+    expect((await rejectionFrom(() => storage.setItem("k", "v"))).code).toBe("timeout");
+    storage.dispose();
+  });
+
+  it("tags a write the worker answered with an error as a protocol failure", async () => {
+    const storage = createSharedWorkerStorage({ port: createErrorPort() });
+    expect((await rejectionFrom(() => storage.setItem("k", "v"))).code).toBe("protocol");
+    storage.dispose();
+  });
+
+  it("tags a request made after dispose", async () => {
+    const storage = createSharedWorkerStorage({ port: createFakePort() });
+    storage.dispose();
+    expect((await rejectionFrom(() => storage.setItem("k", "v"))).code).toBe("disposed");
+  });
+
+  it("reports mode so a caller can tell a live storage from a no-op one", async () => {
+    expect(createSharedWorkerStorage({ port: createFakePort() }).mode).toBe("shared-worker");
+    await withSharedWorker(undefined, () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        expect(createSharedWorkerStorage().mode).toBe("noop");
+      } finally {
+        warn.mockRestore();
+      }
+    });
   });
 });

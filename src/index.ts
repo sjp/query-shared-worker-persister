@@ -8,6 +8,8 @@ export {
   isSharedWorkerSupported,
   type PortAdapter,
   type SharedWorkerStorage,
+  SharedWorkerStorageError,
+  type SharedWorkerStorageErrorCode,
 } from "./shared-worker-storage";
 // The wire contract between the storage and the worker. Public because a caller
 // supplying its own `PortAdapter` has to speak it; named one by one rather than

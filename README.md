@@ -214,11 +214,11 @@ This package relies on [`SharedWorker`](https://developer.mozilla.org/en-US/docs
 
 The worker is a module worker (`{ type: "module" }`), which browsers gained separately from — and later than — `SharedWorker` itself. Any browser current enough to matter has both, but a browser with `SharedWorker` and no module-worker support fails to start the worker rather than falling back, and is handled as a load failure below.
 
-When `SharedWorker` is unavailable, the persister degrades gracefully to a no-op storage: TanStack Query keeps working with its normal in-memory cache, just without cross-tab persistence. A single warning is logged to the console so the fallback is visible during development.
+When `SharedWorker` is unavailable, the persister degrades gracefully to a no-op storage: TanStack Query keeps working with its normal in-memory cache, just without cross-tab persistence. A single warning is reported so the fallback is visible during development, and `createSharedWorkerStorage` marks the storage it hands back `mode: "noop"`.
 
-The same fallback covers a `SharedWorker` that exists but refuses to be constructed — an opaque-origin document (a sandboxed iframe without `allow-same-origin`, or a `blob:`, `data:` or `file:` page), or a privacy mode or enterprise policy that disables workers. `isSharedWorkerSupported()` only reports that the API is present, so it returns `true` in those environments; construction is attempted, the error is logged as a warning, and you get the no-op storage rather than a throw at startup.
+The same fallback covers a `SharedWorker` that exists but refuses to be constructed — an opaque-origin document (a sandboxed iframe without `allow-same-origin`, or a `blob:`, `data:` or `file:` page), or a privacy mode or enterprise policy that disables workers. `isSharedWorkerSupported()` only reports that the API is present, so it returns `true` in those environments; construction is attempted, the error is reported as a warning, and you get the no-op storage rather than a throw at startup.
 
-A worker that is available but fails to _start_ is a different matter — the usual cause is the worker asset not being copied into your bundle output, so its URL 404s. That failure is treated as terminal: the error is logged once, and every request from then on is answered immediately rather than hanging until the request timeout. Writes reject, so the failure reaches `createAsyncStoragePersister`'s `retry` hook and your own error handling; reads resolve empty, for the reason below.
+A worker that is available but fails to _start_ is a different matter — the usual cause is the worker asset not being copied into your bundle output, so its URL 404s. That failure is treated as terminal: the error is reported once, and every request from then on is answered immediately rather than hanging until the request timeout. Writes reject, so the failure reaches `createAsyncStoragePersister`'s `retry` hook and your own error handling; reads resolve empty, for the reason below.
 
 If you'd rather branch on support yourself — for example to skip wiring up persistence entirely — use the exported check:
 
@@ -255,13 +255,47 @@ The same option is available on `createSharedWorkerStorage` if you are wiring th
 
 ### When a read fails
 
-Reads never reject. A `getItem` or `entries` the worker can't answer — a timeout, a worker that never started, an unreadable reply — resolves as though the store were empty, and logs a warning saying why.
+Reads never reject. A `getItem` or `entries` the worker can't answer — a timeout, a worker that never started, an unreadable reply — resolves as though the store were empty, and reports a warning saying why.
 
 That is deliberate, and it is about the store being shared. `persistQueryClient` treats a restore that throws as a corrupt cache, and responds by calling `removeClient()`; here that deletes the entry inside the worker, which is the entry every other tab is living off. So a tab that was only slow to read — a heavy page, a tab throttled in the background, a worker starting while the machine is busy — would not just fail to warm itself, it would erase everyone else's cache. Resolving empty keeps the damage local: that tab fetches from the network, and the shared store is left alone.
 
 Writes still reject, so a save that didn't reach the worker reaches your `retry` hook and your error handling. And a genuine invalidation still clears the entry for everyone: a `buster` mismatch or an elapsed `maxAge` never goes through a failed read.
 
-If your application wants to know that the cache was unreachable, watch the console warning; the value itself is indistinguishable from a cold cache by design.
+If your application wants to know that the cache was unreachable, take the report through [`onError`](#diagnostics); the value itself is indistinguishable from a cold cache by design.
+
+### Diagnostics
+
+Warnings and errors go to the console by default. Pass `onError` to take them instead — to a structured logger, an error reporter, or a `() => {}` if you want them gone. Nothing is written to the console once you do.
+
+```typescript
+const persister = createSharedWorkerPersister({
+  onError: (error) => {
+    if (error.code === "unsupported") analytics.track("cache_not_shared");
+    else logger.warn(error.message, { code: error.code, cause: error.cause });
+  },
+});
+```
+
+Every failure this package raises is a `SharedWorkerStorageError` with a `code`, so you can branch on the cause rather than match on the message:
+
+| `code`        | What happened                                                                                     | Reported             |
+| ------------- | ------------------------------------------------------------------------------------------------- | -------------------- |
+| `unsupported` | No `SharedWorker`, or the constructor refused; the storage is the no-op one and persists nothing. | Yes                  |
+| `transport`   | The worker failed after construction (terminal), or sent a message that couldn't be deserialized. | Yes                  |
+| `timeout`     | The worker didn't answer within `timeoutMs`.                                                      | If it stopped a read |
+| `protocol`    | The worker answered with an error, or with a result that doesn't fit the request.                 | If it stopped a read |
+| `disposed`    | The call came after `dispose()`, or after the signal aborted.                                     | If it stopped a read |
+
+The same errors reach you as the rejection of a failed write, so a `retry` hook can read `code` too. Reads never reject ([why](#when-a-read-fails)), which is exactly why a failed read is reported: the error that stopped it is the report's `cause`, and the report carries that error's `code`. A write is not reported separately — its rejection already carries the error — and a terminal worker failure is reported once, no matter how many calls follow it.
+
+To check synchronously whether persistence is live at all, read `mode` on the storage:
+
+```typescript
+const storage = createSharedWorkerStorage();
+if (storage.mode === "noop") {
+  // SharedWorker is missing or refused: nothing will be persisted or shared.
+}
+```
 
 ## API
 
@@ -284,6 +318,7 @@ Every `createAsyncStoragePersister` option except `storage` is forwarded untouch
 | `timeoutMs`    | `number`                                                          | `10000`                       | How long a read or write waits for the worker before giving up; see [Request timeout](#request-timeout).                                            |
 | `workerUrl`    | `string \| URL`                                                   | —                             | Load the worker from a copy you host, for builds that can't emit the packaged asset; see [Bundler requirements](#bundler-requirements).             |
 | `signal`       | `AbortSignal`                                                     | —                             | Disposes the underlying storage when aborted.                                                                                                       |
+| `onError`      | `(error: SharedWorkerStorageError) => void`                       | console                       | Receives the storage's warnings and errors instead of the console; see [Diagnostics](#diagnostics).                                                 |
 
 The persister hides the storage it creates, so `signal` is the only way to tear the connection down — see [Disposal](#disposal).
 
@@ -291,13 +326,14 @@ The persister hides the storage it creates, so `signal` is the only way to tear 
 
 Returns a `SharedWorkerStorage`: an `AsyncStorage` the shared worker backs, usable anywhere TanStack takes a storage.
 
-| Option      | Type            | Default | Purpose                                                                                                                              |
-| ----------- | --------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `timeoutMs` | `number`        | `10000` | Give up on a pending request after this many milliseconds.                                                                           |
-| `namespace` | `string`        | —       | Appended to the worker's name, so apps shipping the same worker asset get a worker each.                                             |
-| `workerUrl` | `string \| URL` | —       | The worker's script URL, replacing the packaged `cache.worker.js`; see [Bundler requirements](#bundler-requirements).                |
-| `signal`    | `AbortSignal`   | —       | Calls `dispose()` when aborted; an already-aborted signal disposes immediately.                                                      |
-| `port`      | `PortAdapter`   | —       | Carry the protocol over a port you supply instead of constructing a worker; see [Supplying your own port](#supplying-your-own-port). |
+| Option      | Type                                        | Default | Purpose                                                                                                                              |
+| ----------- | ------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `timeoutMs` | `number`                                    | `10000` | Give up on a pending request after this many milliseconds.                                                                           |
+| `namespace` | `string`                                    | —       | Appended to the worker's name, so apps shipping the same worker asset get a worker each.                                             |
+| `workerUrl` | `string \| URL`                             | —       | The worker's script URL, replacing the packaged `cache.worker.js`; see [Bundler requirements](#bundler-requirements).                |
+| `signal`    | `AbortSignal`                               | —       | Calls `dispose()` when aborted; an already-aborted signal disposes immediately.                                                      |
+| `port`      | `PortAdapter`                               | —       | Carry the protocol over a port you supply instead of constructing a worker; see [Supplying your own port](#supplying-your-own-port). |
+| `onError`   | `(error: SharedWorkerStorageError) => void` | console | Receives every warning and error instead of the console; see [Diagnostics](#diagnostics).                                            |
 
 The returned object:
 
@@ -308,8 +344,9 @@ The returned object:
 | `removeItem(key)`     | `Promise<void>`                    | Removes the entry for every connected tab.                                                                                                                       |
 | `entries()`           | `Promise<Array<[string, string]>>` | Every pair in the store, including entries written by other apps on the same worker. Required by `experimental_createQueryPersister`. Empty when the read fails. |
 | `dispose()`           | `void`                             | Settles in-flight requests and closes the port. Idempotent; afterwards writes reject at once and reads resolve empty.                                            |
+| `mode`                | `"shared-worker" \| "noop"`        | Whether a transport was established at all. `"noop"` means nothing is persisted; see [Diagnostics](#diagnostics).                                                |
 
-A write rejects if the worker doesn't answer within `timeoutMs`, and rejects immediately once the storage is disposed or the worker has failed; a read resolves empty in all three cases. When `SharedWorker` is missing or refuses to be constructed you get the same shape backed by no-op storage — reads resolve empty and writes are dropped; see [Browser Support](#browser-support).
+A write rejects with a `SharedWorkerStorageError` if the worker doesn't answer within `timeoutMs`, and rejects immediately once the storage is disposed or the worker has failed; a read resolves empty in all three cases. When `SharedWorker` is missing or refuses to be constructed you get the same shape backed by no-op storage — reads resolve empty and writes are dropped; see [Browser Support](#browser-support).
 
 #### Supplying your own port
 
@@ -349,6 +386,8 @@ This is mainly how the package's own tests drive the storage without a browser, 
 | `CreateSharedWorkerPersisterOptions` | The options object above.                                                                            |
 | `CreateSharedWorkerStorageOptions`   | The storage options object above.                                                                    |
 | `SharedWorkerStorage`                | The storage returned by `createSharedWorkerStorage`.                                                 |
+| `SharedWorkerStorageError`           | The error every failure is raised and reported as; a class, so `instanceof` works.                   |
+| `SharedWorkerStorageErrorCode`       | The `code` it carries; see [Diagnostics](#diagnostics).                                              |
 | `PortAdapter`                        | The port shape `port` accepts: the slice of `MessagePort` this package uses.                         |
 | `StorageRequest`, `StorageResponse`  | The messages exchanged over the port, for anyone implementing a `port` or inspecting worker traffic. |
 | `StorageResult`, `StorageEntries`    | The payload shapes those messages carry.                                                             |

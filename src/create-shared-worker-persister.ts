@@ -1,5 +1,5 @@
 import { createAsyncStoragePersister } from "@tanstack/query-async-storage-persister";
-import { createSharedWorkerStorage } from "./shared-worker-storage";
+import { createSharedWorkerStorage, type SharedWorkerStorageError } from "./shared-worker-storage";
 
 /** Options for {@link createAsyncStoragePersister}, minus the `storage` we supply. */
 type AsyncStoragePersisterOptions = Parameters<typeof createAsyncStoragePersister>[0];
@@ -31,6 +31,13 @@ export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptio
    * way to bound its lifetime. See {@link createSharedWorkerStorage}'s `signal`.
    */
   signal?: AbortSignal | undefined;
+  /**
+   * Receive the warnings and errors the storage would otherwise write to the
+   * console — the no-op fallback, a failed worker, a read that resolved empty —
+   * so they can go to your logger or error reporter instead. See
+   * {@link createSharedWorkerStorage}'s `onError`.
+   */
+  onError?: ((error: SharedWorkerStorageError) => void) | undefined;
 };
 
 /**
@@ -39,7 +46,7 @@ export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptio
  * `PersistQueryClientProvider`'s `persistOptions.persister`.
  */
 export function createSharedWorkerPersister(options: CreateSharedWorkerPersisterOptions = {}) {
-  const { timeoutMs, namespace, workerUrl, signal, ...persisterOptions } = options;
-  const storage = createSharedWorkerStorage({ timeoutMs, namespace, workerUrl, signal });
+  const { timeoutMs, namespace, workerUrl, signal, onError, ...persisterOptions } = options;
+  const storage = createSharedWorkerStorage({ timeoutMs, namespace, workerUrl, signal, onError });
   return createAsyncStoragePersister({ throttleTime: 1_000, ...persisterOptions, storage });
 }

@@ -18,6 +18,15 @@ history, so they summarise the visible behaviour rather than every change.
   request timeout that `createSharedWorkerStorage` accepts.
 - `workerUrl` on both `createSharedWorkerStorage` and `createSharedWorkerPersister`, for builds
   that cannot copy `cache.worker.js` out of `node_modules` and host the asset themselves.
+- `onError` on both `createSharedWorkerStorage` and `createSharedWorkerPersister`, which takes
+  the warnings and errors that previously only went to the console — the no-op fallback, a
+  worker that failed, a read that resolved empty — so an application can log or report them
+  itself, or silence them.
+- `SharedWorkerStorageError`, the error every failure is now raised and reported as, carrying a
+  `code` of `"unsupported"`, `"transport"`, `"timeout"`, `"protocol"` or `"disposed"` so
+  callers can branch on the cause without matching on message text.
+- `mode` on `SharedWorkerStorage`, `"shared-worker"` or `"noop"`, so degrading to the no-op
+  fallback is something code can see rather than only a console warning.
 - `PortAdapter` is exported, so the object the `port` option accepts can now be named. The
   protocol types it is written in terms of (`StorageRequest`, `StorageResponse`,
   `StorageResult`, `StorageEntries`) are exported by name rather than wholesale.
