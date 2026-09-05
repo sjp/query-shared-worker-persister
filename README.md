@@ -335,7 +335,7 @@ Two entry points: `createSharedWorkerPersister` for the usual whole-cache setup,
 
 Builds a SharedWorker-backed storage and wraps it in TanStack's [`createAsyncStoragePersister`](https://tanstack.com/query/latest/docs/framework/react/plugins/createAsyncStoragePersister). Returns a `Persister` to pass as `persistOptions.persister`.
 
-Every `createAsyncStoragePersister` option except `storage` is forwarded untouched, alongside the three this package adds:
+Every `createAsyncStoragePersister` option except `storage` is forwarded untouched, alongside the options this package adds:
 
 | Option         | Type                                                              | Default                       | Purpose                                                                                                                                                                                                                |
 | -------------- | ----------------------------------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
