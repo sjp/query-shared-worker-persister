@@ -40,6 +40,9 @@ history, so they summarise the visible behaviour rather than every change.
   falls back to the same no-op storage used when the API is missing entirely.
 - Both sides of the port validate incoming messages, so a malformed or unknown message is
   answered with an error instead of resolving as `undefined`.
+- Every optional option on `createSharedWorkerStorage` and `createSharedWorkerPersister` now
+  accepts an explicit `undefined`, so projects built with `exactOptionalPropertyTypes` can pass
+  an option they computed conditionally.
 
 ### Fixed
 

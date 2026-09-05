@@ -47,9 +47,14 @@ export interface SharedWorkerStorage extends AsyncStorage {
   dispose: () => void;
 }
 
+// Every option below spells out `| undefined` rather than relying on `?` alone,
+// so a caller building this object conditionally — `{ namespace: flag ? id :
+// undefined }` — is still passing a valid one under `exactOptionalPropertyTypes`,
+// which otherwise distinguishes an absent key from a key set to `undefined`.
+// Omitting an option and passing it as `undefined` mean the same thing here.
 export interface CreateSharedWorkerStorageOptions {
   /** Reject a pending request after this many ms. Default 10s. */
-  timeoutMs?: number;
+  timeoutMs?: number | undefined;
   /**
    * Give this app its own SharedWorker, and its own `CacheStore`, by changing
    * the worker's name. A SharedWorker is identified by `(scriptURL, name)`, and
@@ -62,7 +67,7 @@ export interface CreateSharedWorkerStorageOptions {
    * under the same name and read every entry in it, just as it could read
    * `localStorage`. Don't store values here you wouldn't put in `localStorage`.
    */
-  namespace?: string;
+  namespace?: string | undefined;
   /**
    * Load the worker from this URL instead of the `dist/cache.worker.js` that
    * ships beside the bundle. The default reference is written as
@@ -77,7 +82,7 @@ export interface CreateSharedWorkerStorageOptions {
    * every app that should share, and keep it stable across deployments you want
    * the cache to survive.
    */
-  workerUrl?: string | URL;
+  workerUrl?: string | URL | undefined;
   /**
    * Tear the storage down when this signal aborts — reject any in-flight
    * requests and detach the port, exactly as calling `dispose()` would. Lets
@@ -85,7 +90,7 @@ export interface CreateSharedWorkerStorageOptions {
    * still bound its lifetime. If the signal is already aborted, the storage is
    * disposed immediately.
    */
-  signal?: AbortSignal;
+  signal?: AbortSignal | undefined;
   /**
    * Carry the protocol over this {@link PortAdapter} instead of constructing a
    * `SharedWorker`. Chiefly a test seam — pipe the messages through an
@@ -97,7 +102,7 @@ export interface CreateSharedWorkerStorageOptions {
    * `workerUrl` are ignored, no support check is made, and the storage never
    * falls back to no-op. Disposal still closes the port if it has a `close`.
    */
-  port?: PortAdapter;
+  port?: PortAdapter | undefined;
 }
 
 /** `Omit` that distributes over a union, preserving per-variant fields like `value`. */

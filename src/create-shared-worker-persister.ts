@@ -10,27 +10,27 @@ export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptio
    * rather fall back to the network quickly. See
    * {@link createSharedWorkerStorage}'s `timeoutMs`.
    */
-  timeoutMs?: number;
+  timeoutMs?: number | undefined;
   /**
    * Give this app its own SharedWorker, and its own store, instead of sharing
    * one with other apps that serve the same worker asset. Not an access
    * boundary — any same-origin script can open the same worker. See
    * {@link createSharedWorkerStorage}'s `namespace`.
    */
-  namespace?: string;
+  namespace?: string | undefined;
   /**
    * Load the worker from a URL you host yourself, instead of the
    * `cache.worker.js` published beside this bundle. Only needed when your build
    * can't copy that asset out of `node_modules`. See
    * {@link createSharedWorkerStorage}'s `workerUrl`.
    */
-  workerUrl?: string | URL;
+  workerUrl?: string | URL | undefined;
   /**
    * Dispose the underlying SharedWorker storage when this signal aborts. Since
    * this convenience wrapper hides the storage's `dispose()`, the signal is the
    * way to bound its lifetime. See {@link createSharedWorkerStorage}'s `signal`.
    */
-  signal?: AbortSignal;
+  signal?: AbortSignal | undefined;
 };
 
 /**
