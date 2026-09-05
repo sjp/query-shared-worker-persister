@@ -10,11 +10,45 @@
  * by `(scriptURL, name)` from any same-origin script, so either side may be
  * handed a message from a sender that doesn't speak this protocol at all. Both
  * sides therefore check the `kind` discriminator and the fields they read before
- * acting on a message, and neither treats the static type as a guarantee. An
- * incompatible change to the shapes below should add an explicit version field
- * rather than reuse a field name for new meaning, since two builds of an app can
- * share one worker.
+ * acting on a message, and neither treats the static type as a guarantee.
+ *
+ * The two halves are also not deployed together. A `SharedWorker` runs the
+ * script fetched by the first tab that connected to it and lives until the last
+ * one closes, so a tab on a new build can meet a worker started by an old one.
+ * That is what {@link PROTOCOL_VERSION} is for: an incompatible change to the
+ * shapes below bumps it rather than reusing a field name for new meaning, so the
+ * mismatch is reported as such instead of surfacing as a missing operation or a
+ * field that is quietly absent.
  */
+
+/**
+ * The version of the wire format below that this build speaks. Every message it
+ * sends carries it in {@link Versioned.version}.
+ *
+ * Bump it only for a change that would make one version misread the other —
+ * a field whose meaning changed, one that is now required, or a response shape
+ * an older client would accept and misinterpret. Adding an operation does not
+ * qualify: an older worker already answers one it doesn't know with an error,
+ * and an older client never sends it.
+ */
+export const PROTOCOL_VERSION = 1;
+
+/**
+ * The version to read a message carrying no {@link Versioned.version} as: it was
+ * sent by a build made before the field existed, which is version 1 by
+ * definition. Kept a constant of its own because it is fixed for good — later
+ * versions do carry the field — where {@link PROTOCOL_VERSION} moves.
+ */
+export const UNVERSIONED_PROTOCOL_VERSION = 1;
+
+/**
+ * Carried by every message this build sends, in either direction. Optional
+ * because the peer may be older than the field — read one that lacks it as
+ * {@link UNVERSIONED_PROTOCOL_VERSION} — not because a sender may leave it off.
+ */
+interface Versioned {
+  version?: number | undefined;
+}
 
 /** Every key/value pair in the store, as returned by an `entries` request. */
 export type StorageEntries = Array<[key: string, value: string]>;
@@ -28,13 +62,17 @@ export type StorageEntries = Array<[key: string, value: string]>;
 export type StorageResult = string | null | StorageEntries;
 
 /** Client -> worker: a single storage operation. */
-export type StorageRequest =
-  | { kind: "request"; id: number; op: "getItem"; key: string }
-  | { kind: "request"; id: number; op: "setItem"; key: string; value: string }
-  | { kind: "request"; id: number; op: "removeItem"; key: string }
-  | { kind: "request"; id: number; op: "entries" };
+export type StorageRequest = Versioned &
+  (
+    | { kind: "request"; id: number; op: "getItem"; key: string }
+    | { kind: "request"; id: number; op: "setItem"; key: string; value: string }
+    | { kind: "request"; id: number; op: "removeItem"; key: string }
+    | { kind: "request"; id: number; op: "entries" }
+  );
 
 /** Worker -> client: the result of a single request, keyed by `id`. */
-export type StorageResponse =
-  | { kind: "response"; id: number; ok: true; result: StorageResult }
-  | { kind: "response"; id: number; ok: false; error: string };
+export type StorageResponse = Versioned &
+  (
+    | { kind: "response"; id: number; ok: true; result: StorageResult }
+    | { kind: "response"; id: number; ok: false; error: string }
+  );

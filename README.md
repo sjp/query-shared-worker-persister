@@ -83,6 +83,8 @@ The package also exports the subpath `@sjpnz/query-shared-worker-persister/cache
 
 It is an ES module and must be served as JavaScript. Every app that should share a store has to pass the same `workerUrl`, and changing it between deployments starts a fresh, empty worker — the same trade-off a content-hashed asset URL brings; [How sharing works](#how-sharing-works) covers what that means for open tabs.
 
+Changing it is also the only way to get new worker code running while tabs are still open, because a worker keeps the script the first tab to connect loaded and tabs opening later attach to it as it is ([Which tabs share a worker](#which-tabs-share-a-worker)). So if you take the copy step above and later update this package, name the file for the version you copied — `/static/cache.worker.1.2.3.js` — and accept the empty store that comes with the new URL. A path you keep fixed forever is the trade in the other direction: the cache survives every deployment, and the worker code turns over only once every tab has closed.
+
 ### Configuration
 
 Follow these steps to configure `QueryClient` persistence. The examples build on each other, and use React; a similar approach applies to other frameworks.
@@ -205,6 +207,10 @@ Whether a deployment carries the cache across depends on the worker asset's URL,
 
 A `SharedWorker` is identified by its script URL _and_ its name, and the script URL here is the worker asset your bundler copies into your output. Two applications built separately on one origin normally serve that asset from different (usually content-hashed) URLs, so they already get separate workers and separate stores without doing anything. Sharing happens when applications serve the _same_ worker file — a shell and micro-frontends built together, for instance — and that is what [`namespace`](#recommendations) exists for: it changes the worker's name so those applications get a worker each.
 
+Which code that worker runs follows from the same rule. A `SharedWorker` is created once per `(script URL, name)` and lives until the last tab connected to it closes, so the script it runs is the one fetched when the _first_ tab connected. A tab opened later — on a newer deployment, carrying a newer version of this package — attaches to the worker that is already running and talks to the code it started with. It gets the newer code only once every tab holding the old worker has closed, or once the worker's URL changes: a content-hashed asset URL changes on every build, which is why this rarely shows up, while a `workerUrl` held stable across deployments — what you do to keep the cache alive across one — is exactly the case where it does.
+
+The two sides say which wire protocol they speak, so this can't be mistaken for something else. If a tab's build speaks a version the running worker doesn't, its requests fail with a `protocol` error naming both versions instead of being misread; reads then resolve empty and that tab runs on the network. The version changes only for a change that would make one side misread the other, so a worker and a tab from different releases normally talk to each other quite happily.
+
 ## Security considerations
 
 The shared store is readable by any script on the origin. Nothing about the worker restricts an entry to the application that wrote it: same-origin code can open the same worker with `new SharedWorker(sameUrl, { name: "TANSTACK_QUERY_SHARED_CACHE_WORKER:MY_APP" })` and read every key in it, `namespace` or not. `namespace` is a collision guard, not an access boundary — the protection you get is `localStorage`'s, a store scoped to an origin rather than a private one.
@@ -315,13 +321,13 @@ const persister = createSharedWorkerPersister({
 
 Every failure this package raises is a `SharedWorkerStorageError` with a `code`, so you can branch on the cause rather than match on the message:
 
-| `code`        | What happened                                                                                     | Reported             |
-| ------------- | ------------------------------------------------------------------------------------------------- | -------------------- |
-| `unsupported` | No `SharedWorker`, or the constructor refused; the storage is the no-op one and persists nothing. | In a browser         |
-| `transport`   | The worker failed after construction (terminal), or sent a message that couldn't be deserialized. | Yes                  |
-| `timeout`     | The worker didn't answer within `timeoutMs`.                                                      | If it stopped a read |
-| `protocol`    | The worker answered with an error, or with a result that doesn't fit the request.                 | If it stopped a read |
-| `disposed`    | The call came after `dispose()`, or after the signal aborted.                                     | If it stopped a read |
+| `code`        | What happened                                                                                                                          | Reported             |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| `unsupported` | No `SharedWorker`, or the constructor refused; the storage is the no-op one and persists nothing.                                      | In a browser         |
+| `transport`   | The worker failed after construction (terminal), or sent a message that couldn't be deserialized.                                      | Yes                  |
+| `timeout`     | The worker didn't answer within `timeoutMs`.                                                                                           | If it stopped a read |
+| `protocol`    | The worker answered with an error, with a result that doesn't fit the request, or in a wire-protocol version this build doesn't speak. | If it stopped a read |
+| `disposed`    | The call came after `dispose()`, or after the signal aborted.                                                                          | If it stopped a read |
 
 The same errors reach you as the rejection of a failed write, so a `retry` hook can read `code` too. Reads never reject ([why](#when-a-read-fails)), which is exactly why a failed read is reported: the error that stopped it is the report's `cause`, and the report carries that error's `code`. A write is not reported separately — its rejection already carries the error — and a terminal worker failure is reported once, no matter how many calls follow it. A message that couldn't be deserialized is reported and nothing more: the port stays open, every request in flight settles on its own response, and only the request whose answer was lost falls to its timeout.
 
@@ -424,7 +430,7 @@ const storage = createSharedWorkerStorage({ port });
 const persister = createSharedWorkerPersister({ port });
 ```
 
-Every request carries an `id` and is answered by the response with the same `id`, so replies may arrive in any order; a request never answered is left to `timeoutMs`. Anything that isn't a well-formed `StorageResponse` is ignored, since a real shared worker's port is reachable by any same-origin script. `dispose()` calls `close()` on the port when it has one.
+Every request carries an `id` and is answered by the response with the same `id`, so replies may arrive in any order; a request never answered is left to `timeoutMs`. Anything that isn't a well-formed `StorageResponse` is ignored, since a real shared worker's port is reachable by any same-origin script. `dispose()` calls `close()` on the port when it has one. Requests also carry the wire protocol's own `version`, and a response may echo it or leave it out, as the one above does — an omitted version is read as `1`. A response naming a version this build doesn't speak fails its request rather than being decoded, so a port that forwards to a real worker should pass the field through as it found it rather than write one of its own.
 
 This is mainly how the package's own tests drive the storage without a browser, and it is the seam to reach for when testing an application that persists through this package. It is not a plugin point for a different backing store: the worker's semantics — one store shared by every connected tab, last write wins — are what the rest of this document describes.
 

@@ -10,7 +10,13 @@ import {
   SharedWorkerStorageError,
 } from "./shared-worker-storage";
 import { createFakePort, fakeSharedWorker, withDocument, withSharedWorker } from "./test-utils";
-import type { StorageRequest, StorageResponse, StorageResult } from "./worker/protocol";
+import { respond } from "./worker/connection";
+import {
+  PROTOCOL_VERSION,
+  type StorageRequest,
+  type StorageResponse,
+  type StorageResult,
+} from "./worker/protocol";
 import { CacheStore } from "./worker/store";
 
 /** The fake worker instance {@link fakeSharedWorker} hands back. */
@@ -243,6 +249,10 @@ describe("createSharedWorkerStorage", () => {
     ["a response with no ok flag", { kind: "response", id: 1, result: "v" }],
     ["an ok response with no result", { kind: "response", id: 1, ok: true }],
     ["an error response with no message", { kind: "response", id: 1, ok: false }],
+    [
+      "a response whose version is not a number",
+      { kind: "response", id: 1, version: "1", ok: true, result: "v" },
+    ],
     ["a non-object payload", "hello"],
   ])("ignores %s and leaves the request pending", async (_label, data) => {
     const port = createDeadPort();
@@ -474,6 +484,99 @@ describe("a read the worker cannot answer", () => {
     await expect(storage.setItem("k", "v")).rejects.toThrow(/timed out/);
     await expect(storage.removeItem("k")).rejects.toThrow(/timed out/);
     storage.dispose();
+  });
+});
+
+describe("the protocol version", () => {
+  /**
+   * A port answering as a worker on some other build would: the reply is the
+   * real one this package produces, restamped with `version` — or with the
+   * field removed entirely, which is what a worker predating it sends.
+   */
+  function createPortSpeaking(version: number | undefined): PortAdapter {
+    const store = new CacheStore();
+    const port: PortAdapter = {
+      onmessage: null,
+      postMessage(request: StorageRequest) {
+        const response: Record<string, unknown> = { ...respond(store, request) };
+        if (version === undefined) delete response.version;
+        else response.version = version;
+        queueMicrotask(() => {
+          port.onmessage?.({ data: response } as MessageEvent<unknown>);
+        });
+      },
+    };
+    return port;
+  }
+
+  it("travels out on every request", async () => {
+    const requests: StorageRequest[] = [];
+    const answering = createFakePort();
+    const port: PortAdapter = {
+      onmessage: null,
+      postMessage(request) {
+        requests.push(request);
+        answering.postMessage(request);
+      },
+    };
+    answering.onmessage = (event) => port.onmessage?.(event);
+
+    const storage = createSharedWorkerStorage({ port });
+    await storage.setItem("k", "v");
+    await storage.getItem("k");
+    await storage.entries();
+    await storage.removeItem("k");
+    storage.dispose();
+    expect(requests).toHaveLength(4);
+    for (const request of requests) expect(request.version).toBe(PROTOCOL_VERSION);
+  });
+
+  it("comes back on every response the worker sends", async () => {
+    const sent: StorageResponse[] = [];
+    const port: PortAdapter = {
+      onmessage: null,
+      postMessage(request: StorageRequest) {
+        const response = respond(new CacheStore(), request);
+        sent.push(response);
+        queueMicrotask(() => port.onmessage?.({ data: response } as MessageEvent<unknown>));
+      },
+    };
+    const storage = createSharedWorkerStorage({ port });
+    await storage.getItem("k");
+    storage.dispose();
+    expect(sent).toEqual([
+      { kind: "response", version: PROTOCOL_VERSION, id: 1, ok: true, result: null },
+    ]);
+  });
+
+  it("is assumed to be 1 when a response carries none, so an older worker still answers", async () => {
+    const storage = createSharedWorkerStorage({ port: createPortSpeaking(undefined) });
+    await expect(storage.setItem("k", "v")).resolves.toBeUndefined();
+    await expect(storage.getItem("k")).resolves.toBe("v");
+    await expect(storage.entries()).resolves.toEqual([["k", "v"]]);
+    storage.dispose();
+  });
+
+  it("fails a write answered in another version, naming both", async () => {
+    const storage = createSharedWorkerStorage({ port: createPortSpeaking(PROTOCOL_VERSION + 1) });
+    const failure = await rejectionFrom(() => storage.setItem("k", "v"));
+    expect(failure.code).toBe("protocol");
+    expect(failure.message).toContain(`version ${PROTOCOL_VERSION + 1}`);
+    expect(failure.message).toContain(`this build speaks ${PROTOCOL_VERSION}`);
+    storage.dispose();
+  });
+
+  it("resolves a read answered in another version empty, and reports why", async () => {
+    const reported: SharedWorkerStorageError[] = [];
+    const storage = createSharedWorkerStorage({
+      port: createPortSpeaking(PROTOCOL_VERSION + 1),
+      onError: (error) => reported.push(error),
+    });
+    await expect(storage.getItem("k")).resolves.toBeNull();
+    storage.dispose();
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.code).toBe("protocol");
+    expect(reported[0]?.message).toContain(`version ${PROTOCOL_VERSION + 1}`);
   });
 });
 

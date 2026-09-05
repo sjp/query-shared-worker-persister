@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import type { WorkerPort } from "./worker/connection";
-import type { StorageRequest, StorageResponse } from "./worker/protocol";
+import { PROTOCOL_VERSION, type StorageRequest, type StorageResponse } from "./worker/protocol";
 
 /**
  * The worker entry installs its `onconnect` handler on the global scope as a
@@ -43,12 +43,14 @@ describe("the SharedWorker entry", () => {
     const tab = connect();
     expect(tab.send({ kind: "request", id: 1, op: "setItem", key: "k", value: "v" })).toEqual({
       kind: "response",
+      version: PROTOCOL_VERSION,
       id: 1,
       ok: true,
       result: null,
     });
     expect(tab.send({ kind: "request", id: 2, op: "getItem", key: "k" })).toEqual({
       kind: "response",
+      version: PROTOCOL_VERSION,
       id: 2,
       ok: true,
       result: "v",
@@ -62,6 +64,7 @@ describe("the SharedWorker entry", () => {
     writer.send({ kind: "request", id: 1, op: "setItem", key: "k", value: "v" });
     expect(reader.send({ kind: "request", id: 1, op: "entries" })).toEqual({
       kind: "response",
+      version: PROTOCOL_VERSION,
       id: 1,
       ok: true,
       result: [["k", "v"]],

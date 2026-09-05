@@ -1,9 +1,11 @@
 import type { AsyncStorage } from "@tanstack/query-persist-client-core";
-import type {
-  StorageEntries,
-  StorageRequest,
-  StorageResponse,
-  StorageResult,
+import {
+  PROTOCOL_VERSION,
+  UNVERSIONED_PROTOCOL_VERSION,
+  type StorageEntries,
+  type StorageRequest,
+  type StorageResponse,
+  type StorageResult,
 } from "./worker/protocol";
 
 /** Prefixes console output so a line is traceable to this package. */
@@ -44,8 +46,9 @@ export type SharedWorkerStorageErrorCode =
  * - `transport` — the worker failed after it was constructed, or sent a message
  *   that could not be deserialized. The first of those is terminal.
  * - `timeout` — the worker did not answer within `timeoutMs`.
- * - `protocol` — the worker answered, but with an error or with a result that
- *   doesn't fit the operation it was sent.
+ * - `protocol` — the worker answered, but with an error, with a result that
+ *   doesn't fit the operation it was sent, or in a protocol version this build
+ *   doesn't speak.
  * - `disposed` — the request was made after `dispose()`.
  *
  * These reach a caller two ways: as the rejection of a write, and through
@@ -423,6 +426,21 @@ export function createSharedWorkerStorage(
       if (!entry) return; // already timed out, or a stray message — ignore
       pending.delete(message.id);
       if (entry.timer !== undefined) clearTimeout(entry.timer);
+      // The worker runs whichever build of this package the first tab to
+      // connect loaded, which need not be this one. A response written to a
+      // wire format this build doesn't speak can't be read as one, so it fails
+      // the request rather than being decoded on the chance that it fits, and
+      // names both versions so the mismatch isn't mistaken for a bad worker.
+      const version = message.version ?? UNVERSIONED_PROTOCOL_VERSION;
+      if (version !== PROTOCOL_VERSION) {
+        entry.reject(
+          new SharedWorkerStorageError(
+            "protocol",
+            `SharedWorker speaks protocol version ${version}, this build speaks ${PROTOCOL_VERSION}`,
+          ),
+        );
+        return;
+      }
       if (message.ok) {
         // The envelope alone doesn't say which result shape is legal - that
         // follows from the request. Checking it against the operation we sent
@@ -513,7 +531,9 @@ export function createSharedWorkerStorage(
       // a caller branching on `code` — or a read turning the failure into an
       // empty result — sees no special case.
       try {
-        port.postMessage(message);
+        // Stamped here rather than in each builder above so every request
+        // carries it, and so a builder stays free to name only its operation.
+        port.postMessage({ ...message, version: PROTOCOL_VERSION });
       } catch (cause) {
         pending.delete(id);
         if (timer !== undefined) clearTimeout(timer);
@@ -706,6 +726,10 @@ function isStorageResponse(data: unknown): data is StorageResponse {
   if (typeof data !== "object" || data === null) return false;
   const message = data as Record<string, unknown>;
   if (message.kind !== "response" || typeof message.id !== "number") return false;
+  // A worker older than the field sends none, which is the one absence this
+  // envelope allows; anything other than a number in its place is not a version
+  // and so not one of our responses.
+  if (message.version !== undefined && typeof message.version !== "number") return false;
   if (message.ok === true) return isStorageResult(message.result);
   return message.ok === false && typeof message.error === "string";
 }

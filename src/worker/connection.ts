@@ -1,5 +1,5 @@
 import { describeValue } from "./describe-value";
-import type { StorageRequest, StorageResponse } from "./protocol";
+import { PROTOCOL_VERSION, type StorageRequest, type StorageResponse } from "./protocol";
 import type { CacheStore } from "./store";
 
 /**
@@ -54,6 +54,12 @@ function readId(data: unknown): number | undefined {
  * this point `data` can be treated as a {@link StorageRequest}: an unchecked
  * field would otherwise reach `CacheStore` as `undefined` and be stored or
  * looked up under a bogus key.
+ *
+ * A request's `version` is deliberately not one of them. This worker is
+ * whichever build the first tab to connect loaded, so it may well be the older
+ * of the two, and rejecting a version it doesn't recognise would refuse exactly
+ * the clients it should go on serving. Its own version travels back on every
+ * response instead, for the client to compare against the one it speaks.
  */
 function describeInvalidRequest(data: unknown): string | undefined {
   const message = asRecord(data);
@@ -87,10 +93,17 @@ export function respond(
   request: StorageRequest,
 ): StorageResponse {
   try {
-    return { kind: "response", id: request.id, ok: true, result: store.handle(request) };
+    return {
+      kind: "response",
+      version: PROTOCOL_VERSION,
+      id: request.id,
+      ok: true,
+      result: store.handle(request),
+    };
   } catch (err) {
     return {
       kind: "response",
+      version: PROTOCOL_VERSION,
       id: request.id,
       ok: false,
       error: err instanceof Error ? err.message : String(err),
@@ -130,6 +143,7 @@ export function handleConnect(
       if (id !== undefined) {
         port.postMessage({
           kind: "response",
+          version: PROTOCOL_VERSION,
           id,
           ok: false,
           error: `Malformed request: ${reason}`,
@@ -153,6 +167,7 @@ export function handleConnect(
       if (id !== undefined) {
         port.postMessage({
           kind: "response",
+          version: PROTOCOL_VERSION,
           id,
           ok: false,
           error: `Failed to handle request: ${error}`,

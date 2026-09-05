@@ -36,6 +36,16 @@ history, so they summarise the visible behaviour rather than every change.
 - `PortAdapter` is exported, so the object the `port` option accepts can now be named. The
   protocol types it is written in terms of (`StorageRequest`, `StorageResponse`,
   `StorageResult`, `StorageEntries`) are exported by name rather than wholesale.
+- A protocol version on every message between a tab and the worker. A `SharedWorker` runs the
+  script the first tab to connect loaded and lives until the last one closes, so a tab on a new
+  build can find itself talking to a worker an older build started; the version is what makes
+  that legible. A response naming a version this build doesn't speak now fails its request as a
+  `"protocol"` error naming both versions — leaving reads to resolve empty — instead of being
+  decoded on the chance that it fits. A response carrying no version is read as version 1, so a
+  worker built before the field existed still answers, and the worker never turns a request
+  away over its version, since it may be the older side of the pair. `README.md` covers what
+  this means for a `workerUrl` held stable across deployments, under "Which tabs share a
+  worker".
 - `./package.json` is exported, so tooling that reads a dependency's manifest through the
   export map can reach it.
 - A `default` condition on the package entry, so resolvers whose condition set omits `import`

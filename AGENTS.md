@@ -20,15 +20,15 @@ Docs are local at `node_modules/vite-plus/docs` or online at https://viteplus.de
 The package publishes two entries, and the split between them runs through the whole source
 tree. The table is in that order: the tab side first, the worker side after, and the protocol
 they meet on in between. `src/worker/connection.ts`, `src/worker/store.ts` and
-`src/worker/describe-value.ts` run inside the worker process; `src/worker/protocol.ts` is types
-only and is imported by both sides.
+`src/worker/describe-value.ts` run inside the worker process; `src/worker/protocol.ts` is
+imported by both sides and holds nothing but the message shapes and their version.
 
 | File                                    | Role                                                                                                                              |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | `src/index.ts`                          | The public surface. Every export is named individually, so widening it is a deliberate edit.                                      |
 | `src/create-shared-worker-persister.ts` | One-call wrapper: builds the storage and hands it to TanStack's async-storage persister.                                          |
 | `src/shared-worker-storage.ts`          | The client half. Constructs the worker, correlates requests to responses by `id`, owns timeouts, disposal and the no-op fallback. |
-| `src/worker/protocol.ts`                | The wire contract both halves import. No runtime code.                                                                            |
+| `src/worker/protocol.ts`                | The wire contract both halves import: the message shapes, and the version they are stamped with.                                  |
 | `src/cache.worker.ts`                   | The worker entry. Holds the one `CacheStore` and hands each connecting port to `handleConnect`.                                   |
 | `src/worker/connection.ts`              | Validates incoming messages and answers them on a port. Transport-shaped but free of worker globals.                              |
 | `src/worker/store.ts`                   | The cache: a `Map<string, string>` and the operations over it. No transport, no globals.                                          |
@@ -60,6 +60,15 @@ User-facing behaviour — what the options mean, what consumers have to do — l
 - **Reads never reject.** A read the worker can't answer resolves empty, because
   `persistQueryClient` answers a failed restore by clearing the entry — for every tab. Writes
   are free to reject.
+- **The worker keeps answering older clients.** A running `SharedWorker` is whichever build
+  the first tab to connect loaded, so the two halves are routinely from different releases and
+  either one may be the older. Every message carries `PROTOCOL_VERSION`; the worker never
+  refuses a request over it, since it may well be the old side and would be turning away the
+  tabs it should still serve, and the client compares versions on the response instead. Bump
+  the version only for a change that would make one side misread the other, and keep serving
+  the shapes an older client sends for as long as that is reasonable — an operation added on
+  the worker side alone needs no bump, because an old worker already answers one it doesn't
+  know with an error and an old client never sends it.
 
 ## Validating changes
 
