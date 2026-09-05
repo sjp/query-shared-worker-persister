@@ -28,9 +28,10 @@
   },
   "scripts": {
     "build": "tsc && vp pack",
+    "check": "vp check",
+    "check:fix": "vp check --fix",
     "check:toolchain": "node scripts/check-vite-override.mjs",
     "lint": "vp lint",
-    "lint:fix": "vp check --fix",
     "test": "vp test run",
     "test:watch": "vp test"
   },

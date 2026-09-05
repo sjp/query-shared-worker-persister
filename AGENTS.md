@@ -15,6 +15,18 @@ Docs are local at `node_modules/vite-plus/docs` or online at https://viteplus.de
 
 <!--VITE PLUS END-->
 
+## Validating changes
+
+`vp check` (also `npm run check`, and `npm run check:fix` to apply fixes) formats, lints and
+type checks in one pass. CI runs it via `vp run check`, so formatting drift and lint or type
+errors fail the build.
+
+The `build` script keeps its own `tsc` step in front of `vp pack`. `vp pack` emits
+declarations without checking them, so without that step a local `npm run build` would
+happily produce a package from code that does not type check. CI therefore type checks twice,
+once in `check` and once in `build`; the second pass costs little and keeps `npm run build`
+trustworthy on its own.
+
 ## Upgrading Vite+
 
 `package.json` aliases `vite` to Vite+'s own fork of it:
