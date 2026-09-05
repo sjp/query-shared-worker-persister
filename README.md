@@ -214,6 +214,66 @@ const persister = createSharedWorkerPersister({ timeoutMs: 2_000 });
 
 The same option is available on `createSharedWorkerStorage` if you are wiring the storage up yourself.
 
+## API
+
+Two entry points: `createSharedWorkerPersister` for the usual whole-cache setup, and `createSharedWorkerStorage` for the storage on its own — the lower-level building block, and what [per-query persistence](#per-query-persistence) needs.
+
+### `createSharedWorkerPersister(options?)`
+
+Builds a SharedWorker-backed storage and wraps it in TanStack's [`createAsyncStoragePersister`](https://tanstack.com/query/latest/docs/framework/react/plugins/createAsyncStoragePersister). Returns a `Persister` to pass as `persistOptions.persister`.
+
+Every `createAsyncStoragePersister` option except `storage` is forwarded untouched, alongside the three this package adds:
+
+| Option         | Type                                                              | Default                       | Purpose                                                                                                                                             |
+| -------------- | ----------------------------------------------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `key`          | `string`                                                          | `"REACT_QUERY_OFFLINE_CACHE"` | The entry the whole dehydrated cache is stored under. Give each application its own; see [Recommendations](#recommendations).                       |
+| `throttleTime` | `number`                                                          | `1000`                        | Milliseconds to coalesce saves over.                                                                                                                |
+| `serialize`    | `(client: PersistedClient) => string \| Promise<string>`          | `JSON.stringify`              | Also the place to strip queries you don't want in a store any same-origin script can read; see [Security considerations](#security-considerations). |
+| `deserialize`  | `(cached: string) => PersistedClient \| Promise<PersistedClient>` | `JSON.parse`                  | Inverse of `serialize`.                                                                                                                             |
+| `retry`        | `AsyncPersistRetryer`                                             | —                             | Called when a save fails, to shrink the client and try again.                                                                                       |
+| `namespace`    | `string`                                                          | —                             | Give this app a worker, and therefore a store, of its own; see [Which tabs share a worker](#which-tabs-share-a-worker).                             |
+| `timeoutMs`    | `number`                                                          | `10000`                       | How long a read or write waits for the worker before rejecting; see [Request timeout](#request-timeout).                                            |
+| `signal`       | `AbortSignal`                                                     | —                             | Disposes the underlying storage when aborted.                                                                                                       |
+
+The persister hides the storage it creates, so `signal` is the only way to tear the connection down — see [Disposal](#disposal).
+
+### `createSharedWorkerStorage(options?)`
+
+Returns a `SharedWorkerStorage`: an `AsyncStorage` the shared worker backs, usable anywhere TanStack takes a storage.
+
+| Option      | Type                        | Default | Purpose                                                                                                        |
+| ----------- | --------------------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
+| `timeoutMs` | `number`                    | `10000` | Reject a pending request after this many milliseconds.                                                         |
+| `namespace` | `string`                    | —       | Appended to the worker's name, so apps shipping the same worker asset get a worker each.                       |
+| `signal`    | `AbortSignal`               | —       | Calls `dispose()` when aborted; an already-aborted signal disposes immediately.                                |
+| `port`      | `MessagePort`-shaped object | —       | A test seam: pipe the protocol through your own port instead of constructing a worker. Not needed in app code. |
+
+The returned object:
+
+| Member                | Returns                            | Notes                                                                                                                                 |
+| --------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `getItem(key)`        | `Promise<string \| null>`          | `null` when the key is absent.                                                                                                        |
+| `setItem(key, value)` | `Promise<void>`                    | Replaces any existing value outright; see [How sharing works](#how-sharing-works).                                                    |
+| `removeItem(key)`     | `Promise<void>`                    | Removes the entry for every connected tab.                                                                                            |
+| `entries()`           | `Promise<Array<[string, string]>>` | Every pair in the store, including entries written by other apps on the same worker. Required by `experimental_createQueryPersister`. |
+| `dispose()`           | `void`                             | Rejects in-flight requests and closes the port. Idempotent, and every later read or write rejects at once.                            |
+
+Each call rejects if the worker doesn't answer within `timeoutMs`, and rejects immediately once the storage is disposed or the worker has failed. When `SharedWorker` is missing or refuses to be constructed you get the same shape backed by no-op storage — reads resolve empty and writes are dropped; see [Browser Support](#browser-support).
+
+### `isSharedWorkerSupported()`
+
+`true` when the `SharedWorker` constructor exists. A presence check only: it can't tell you the constructor will succeed, which is why construction failures fall back to no-op storage rather than throwing. See [Browser Support](#browser-support).
+
+### Types
+
+| Type                                 | What it is                                                                                           |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `CreateSharedWorkerPersisterOptions` | The options object above.                                                                            |
+| `CreateSharedWorkerStorageOptions`   | The storage options object above.                                                                    |
+| `SharedWorkerStorage`                | The storage returned by `createSharedWorkerStorage`.                                                 |
+| `StorageRequest`, `StorageResponse`  | The messages exchanged over the port, for anyone implementing a `port` or inspecting worker traffic. |
+| `StorageResult`, `StorageEntries`    | The payload shapes those messages carry.                                                             |
+
 ## Recommendations
 
 To get the most out of this package and ensure optimal performance, consider the following recommendations:
