@@ -25,6 +25,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: true
       - run: vp install --frozen-lockfile
+      - run: vp run check:toolchain
       - run: vp run lint
       - run: vp run build
       - run: vp run test

@@ -14,3 +14,23 @@ Docs are local at `node_modules/vite-plus/docs` or online at https://viteplus.de
 - [ ] If setup, runtime, or package-manager behavior looks wrong, run `vp env doctor` and include its output when asking for help.
 
 <!--VITE PLUS END-->
+
+## Upgrading Vite+
+
+`package.json` aliases `vite` to Vite+'s own fork of it:
+
+```json
+"overrides": { "vite": "npm:@voidzero-dev/vite-plus-core@<version>" }
+```
+
+The alias exists so that a single copy of the core is installed. Dependabot can bump
+`devDependencies.vite-plus`, but it cannot touch `overrides`, so a Vite+ upgrade is only
+complete once all three of these agree:
+
+1. `devDependencies.vite-plus`,
+2. the version in `overrides.vite`, and
+3. the `node_modules/vite` entry in `package-lock.json`.
+
+Prefer `vp migrate`, which re-pins `vite-plus` and the alias together. Otherwise edit the
+override by hand, then run `vp install` (not `--frozen-lockfile`) and commit the refreshed
+`package-lock.json`. `npm run check:toolchain` verifies all three and runs in CI.
