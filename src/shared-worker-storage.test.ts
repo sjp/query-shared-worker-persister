@@ -149,6 +149,33 @@ describe("createSharedWorkerStorage", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  it("disposes through Symbol.dispose exactly as dispose does", async () => {
+    const close = vi.fn();
+    const port: PortAdapter = { onmessage: null, postMessage() {}, close };
+    const storage = createSharedWorkerStorage({ port, timeoutMs: 60_000 });
+    const inflight = storage.setItem("k", "v");
+    storage[Symbol.dispose]();
+    await expect(inflight).rejects.toThrow(/disposed/);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(port.onmessage).toBeNull();
+    // The two names are one teardown, so the other is a no-op afterwards.
+    storage.dispose();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the storage when a `using` declaration goes out of scope", async () => {
+    const close = vi.fn();
+    const port: PortAdapter = { onmessage: null, postMessage() {}, close };
+    let inflight: Promise<unknown>;
+    {
+      using storage = createSharedWorkerStorage({ port, timeoutMs: 60_000 });
+      inflight = Promise.resolve(storage.setItem("k", "v"));
+      expect(close).not.toHaveBeenCalled();
+    }
+    expect(close).toHaveBeenCalledTimes(1);
+    await expect(inflight).rejects.toThrow(/disposed/);
+  });
+
   it("settles in-flight requests and logs when the port reports a message error", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
@@ -301,6 +328,9 @@ describe("no-op fallback when SharedWorker is unavailable", () => {
         await expect(storage.entries()).resolves.toEqual([]);
         await storage.removeItem("k");
         expect(() => storage.dispose()).not.toThrow();
+        // The fallback carries the same disposal surface, so a caller using
+        // `using` or `dispose()` needs no branch on which storage it was given.
+        expect(() => storage[Symbol.dispose]()).not.toThrow();
         expect(warn).toHaveBeenCalledTimes(1);
       });
     } finally {
@@ -328,6 +358,9 @@ describe("no-op fallback when SharedWorker is unavailable", () => {
         await expect(storage.entries()).resolves.toEqual([]);
         await storage.removeItem("k");
         expect(() => storage.dispose()).not.toThrow();
+        // The fallback carries the same disposal surface, so a caller using
+        // `using` or `dispose()` needs no branch on which storage it was given.
+        expect(() => storage[Symbol.dispose]()).not.toThrow();
         expect(warn).toHaveBeenCalledTimes(1);
         expect(warn.mock.calls[0]?.[0]).toContain("access denied");
       });

@@ -1,4 +1,5 @@
 import { createAsyncStoragePersister } from "@tanstack/query-async-storage-persister";
+import type { Persister } from "@tanstack/query-persist-client-core";
 import { createSharedWorkerStorage, type SharedWorkerStorageError } from "./shared-worker-storage";
 
 /** Options for {@link createAsyncStoragePersister}, minus the `storage` we supply. */
@@ -26,9 +27,10 @@ export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptio
    */
   workerUrl?: string | URL | undefined;
   /**
-   * Dispose the underlying SharedWorker storage when this signal aborts. Since
-   * this convenience wrapper hides the storage's `dispose()`, the signal is the
-   * way to bound its lifetime. See {@link createSharedWorkerStorage}'s `signal`.
+   * Dispose the underlying SharedWorker storage when this signal aborts. A
+   * convenience for callers that already have a signal to hang the lifetime on;
+   * the returned persister can also be disposed directly. See
+   * {@link createSharedWorkerStorage}'s `signal`.
    */
   signal?: AbortSignal | undefined;
   /**
@@ -41,12 +43,48 @@ export type CreateSharedWorkerPersisterOptions = Omit<AsyncStoragePersisterOptio
 };
 
 /**
+ * A TanStack `Persister` that also owns the storage behind it, so the
+ * SharedWorker connection it opened can be released without reaching for the
+ * storage itself.
+ */
+export interface SharedWorkerPersister extends Persister {
+  /**
+   * Dispose the underlying storage: settle its in-flight requests and close the
+   * port. Idempotent, and independent of any `signal` that was passed. The
+   * persister object stays callable afterwards — with the storage gone a
+   * restore resolves as though nothing were stored, and a save no longer
+   * reaches the worker.
+   */
+  dispose: () => void;
+  /**
+   * The same teardown as {@link SharedWorkerPersister.dispose}, so a persister
+   * scoped to a block can be declared with `using`. Needs TypeScript 5.2 or
+   * newer to compile and `Symbol.dispose` at runtime.
+   */
+  [Symbol.dispose]: () => void;
+}
+
+/**
  * One-call convenience: build a SharedWorker-backed `AsyncStorage` and wrap it
  * in TanStack's async-storage persister. Drop the result straight into
  * `PersistQueryClientProvider`'s `persistOptions.persister`.
+ *
+ * The storage stays reachable through the returned `dispose()`, for the
+ * short-lived persisters — tests, hot reloads, a micro-frontend being unmounted
+ * — that have to give the connection back.
  */
-export function createSharedWorkerPersister(options: CreateSharedWorkerPersisterOptions = {}) {
+export function createSharedWorkerPersister(
+  options: CreateSharedWorkerPersisterOptions = {},
+): SharedWorkerPersister {
   const { timeoutMs, namespace, workerUrl, signal, onError, ...persisterOptions } = options;
   const storage = createSharedWorkerStorage({ timeoutMs, namespace, workerUrl, signal, onError });
-  return createAsyncStoragePersister({ throttleTime: 1_000, ...persisterOptions, storage });
+  const persister = createAsyncStoragePersister({
+    throttleTime: 1_000,
+    ...persisterOptions,
+    storage,
+  });
+  const dispose = () => {
+    storage.dispose();
+  };
+  return { ...persister, dispose, [Symbol.dispose]: dispose };
 }

@@ -1,6 +1,7 @@
 export {
   type CreateSharedWorkerPersisterOptions,
   createSharedWorkerPersister,
+  type SharedWorkerPersister,
 } from "./create-shared-worker-persister";
 export {
   type CreateSharedWorkerStorageOptions,

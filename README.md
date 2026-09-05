@@ -233,7 +233,29 @@ const persister = isSharedWorkerSupported() ? createSharedWorkerPersister() : un
 
 ### Disposal
 
-Most apps keep a single persister for the page's lifetime and never need to dispose it. If you do recreate the persister (for example in tests, micro-frontends, or hot-module reloads), pass an `AbortSignal` to release the underlying SharedWorker connection when you're done:
+Most apps keep a single persister for the page's lifetime and never need to dispose it. If you do recreate the persister (for example in tests, micro-frontends, or hot-module reloads), release the underlying SharedWorker connection when you're done:
+
+```typescript
+const persister = createSharedWorkerPersister();
+
+// later, to tear it down:
+persister.dispose();
+```
+
+`createSharedWorkerStorage` has the same `dispose()`. Either way it settles whatever is in flight and closes the port, it is idempotent, and afterwards writes reject at once and reads resolve empty.
+
+For a connection whose life is one block — a test, a script — declare it with `using` and it is disposed on the way out:
+
+```typescript
+{
+  using persister = createSharedWorkerPersister();
+  await persister.persistClient(client);
+} // disposed here
+```
+
+`using` needs TypeScript 5.2 or later to compile, and `Symbol.dispose` to exist at runtime. On a browser too old to have it, either apply the polyfill TypeScript documents (`Symbol.dispose ??= Symbol("Symbol.dispose")`, before the storage is created) or just call `dispose()` — it is the same teardown.
+
+When the lifetime is already governed by an `AbortSignal`, pass it instead and disposal follows the abort — an already-aborted signal disposes immediately:
 
 ```typescript
 const controller = new AbortController();
@@ -320,7 +342,12 @@ Every `createAsyncStoragePersister` option except `storage` is forwarded untouch
 | `signal`       | `AbortSignal`                                                     | —                             | Disposes the underlying storage when aborted.                                                                                                       |
 | `onError`      | `(error: SharedWorkerStorageError) => void`                       | console                       | Receives the storage's warnings and errors instead of the console; see [Diagnostics](#diagnostics).                                                 |
 
-The persister hides the storage it creates, so `signal` is the only way to tear the connection down — see [Disposal](#disposal).
+Beyond the `Persister` methods, the returned object carries the storage's teardown:
+
+| Member               | Returns | Notes                                                                                                                            |
+| -------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `dispose()`          | `void`  | Disposes the storage this persister created: settles in-flight requests, closes the port. Idempotent; see [Disposal](#disposal). |
+| `[Symbol.dispose]()` | `void`  | The same call under the well-known symbol, so the persister can be declared with `using`.                                        |
 
 ### `createSharedWorkerStorage(options?)`
 
@@ -344,6 +371,7 @@ The returned object:
 | `removeItem(key)`     | `Promise<void>`                    | Removes the entry for every connected tab.                                                                                                                       |
 | `entries()`           | `Promise<Array<[string, string]>>` | Every pair in the store, including entries written by other apps on the same worker. Required by `experimental_createQueryPersister`. Empty when the read fails. |
 | `dispose()`           | `void`                             | Settles in-flight requests and closes the port. Idempotent; afterwards writes reject at once and reads resolve empty.                                            |
+| `[Symbol.dispose]()`  | `void`                             | The same teardown as `dispose()`, so the storage can be declared with `using`; see [Disposal](#disposal).                                                        |
 | `mode`                | `"shared-worker" \| "noop"`        | Whether a transport was established at all. `"noop"` means nothing is persisted; see [Diagnostics](#diagnostics).                                                |
 
 A write rejects with a `SharedWorkerStorageError` if the worker doesn't answer within `timeoutMs`, and rejects immediately once the storage is disposed or the worker has failed; a read resolves empty in all three cases. When `SharedWorker` is missing or refuses to be constructed you get the same shape backed by no-op storage — reads resolve empty and writes are dropped; see [Browser Support](#browser-support).

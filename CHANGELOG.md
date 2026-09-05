@@ -34,6 +34,11 @@ history, so they summarise the visible behaviour rather than every change.
   export map can reach it.
 - A `default` condition on the package entry, so resolvers whose condition set omits `import`
   still find `dist/index.js`.
+- `[Symbol.dispose]()` on `SharedWorkerStorage`, aliasing `dispose()`, so a storage can be scoped
+  with a `using` declaration.
+- `dispose()` and `[Symbol.dispose]()` on the persister returned by `createSharedWorkerPersister`,
+  which previously hid the storage it created and could only be torn down through `signal`. Its
+  type is exported as `SharedWorkerPersister`.
 - `keywords`, `bugs` and `engines` in the manifest.
 
 ### Changed

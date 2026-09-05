@@ -90,6 +90,33 @@ describe("createSharedWorkerPersister", () => {
     });
   });
 
+  it("disposes the storage it created, with no signal involved", async () => {
+    const worker = fakeSharedWorker({ dead: true });
+    await withSharedWorker(worker.FakeSharedWorker, async () => {
+      const persister = createSharedWorkerPersister();
+      const removing = persister.removeClient();
+      persister.dispose();
+      await expect(removing).rejects.toThrow(/disposed/);
+      expect(worker.latest.close).toHaveBeenCalledTimes(1);
+      // Idempotent, like the storage's own disposal.
+      expect(() => persister.dispose()).not.toThrow();
+      expect(worker.latest.close).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("disposes the storage at the end of a `using` block", async () => {
+    const worker = fakeSharedWorker({ dead: true });
+    await withSharedWorker(worker.FakeSharedWorker, async () => {
+      let removing: Promise<unknown>;
+      {
+        using persister = createSharedWorkerPersister();
+        removing = Promise.resolve(persister.removeClient());
+      }
+      expect(worker.latest.close).toHaveBeenCalledTimes(1);
+      await expect(removing).rejects.toThrow(/disposed/);
+    });
+  });
+
   it("removes the persisted client from the shared store", async () => {
     const { FakeSharedWorker, store } = fakeSharedWorker();
     await withSharedWorker(FakeSharedWorker, async () => {

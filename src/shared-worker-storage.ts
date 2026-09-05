@@ -90,6 +90,19 @@ export interface SharedWorkerStorage extends AsyncStorage {
    * writes reject straight away, and later reads resolve empty.
    */
   dispose: () => void;
+  /**
+   * The same teardown as {@link SharedWorkerStorage.dispose}, under the well-known
+   * symbol, so a storage whose lifetime matches a block can be declared with
+   * `using` and released on the way out:
+   *
+   * ```ts
+   * using storage = createSharedWorkerStorage();
+   * ```
+   *
+   * Needs TypeScript 5.2 or newer to compile, and a runtime with
+   * `Symbol.dispose` (or a polyfill for it) to run.
+   */
+  [Symbol.dispose]: () => void;
 }
 
 // Every option below spells out `| undefined` rather than relying on `?` alone,
@@ -413,6 +426,13 @@ export function createSharedWorkerStorage(
     });
   }
 
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    rejectPending(disposedError());
+    closePort();
+  }
+
   // Each method narrows the shared result type to the shape its operation is
   // defined to return. The cast is sound because `request` only resolves a
   // result that matched the operation it was sent for, and a read that failed
@@ -427,19 +447,18 @@ export function createSharedWorkerStorage(
     removeItem: async (key) => {
       await request({ kind: "request", op: "removeItem", key });
     },
-    dispose: () => {
-      if (disposed) return;
-      disposed = true;
-      rejectPending(disposedError());
-      closePort();
-    },
+    dispose,
+    // The symbol is read when the storage is built rather than when this module
+    // loads, so a runtime polyfilled during application startup still installs
+    // the method under the symbol `using` will look for.
+    [Symbol.dispose]: dispose,
   };
 
   // Bind disposal to the caller's signal. `dispose` is idempotent, so an abort
   // after a manual dispose (or vice versa) is harmless.
   if (options.signal) {
-    if (options.signal.aborted) storage.dispose();
-    else options.signal.addEventListener("abort", () => storage.dispose(), { once: true });
+    if (options.signal.aborted) dispose();
+    else options.signal.addEventListener("abort", () => dispose(), { once: true });
   }
 
   return storage;
@@ -515,13 +534,17 @@ function matchesOperation(op: StorageRequest["op"], result: StorageResult): bool
  * Returned when `SharedWorker` is unavailable so callers can keep one code path.
  */
 function createNoopStorage(): SharedWorkerStorage {
+  // There is no port and nothing in flight, so disposal has nothing to do; it
+  // exists so callers can keep one code path, `using` included.
+  const dispose = () => {};
   return {
     mode: "noop",
     getItem: () => Promise.resolve(null),
     entries: () => Promise.resolve([]),
     setItem: () => Promise.resolve(),
     removeItem: () => Promise.resolve(),
-    dispose: () => {},
+    dispose,
+    [Symbol.dispose]: dispose,
   };
 }
 
