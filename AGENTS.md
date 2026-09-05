@@ -182,5 +182,12 @@ npm trusted publishing over the job's OIDC token — there is no npm token in re
 secrets, and the package must be configured for trusted publishing against this repository and
 workflow on npmjs.com for the publish step to be authorised.
 
+The dist-tag the publish uses is derived from the version, so a prerelease never becomes what
+`npm install` hands out. A plain `X.Y.Z` publishes under `latest`; a version with a prerelease
+identifier — `0.3.0-beta.1`, `1.0.0-rc.0` — publishes under that identifier (`beta`, `rc`),
+falling back to `next` for an identifier npm would not take as a tag, such as the bare numeric
+one in `1.0.0-1`. Tagging a prerelease is therefore safe, and consumers reach it with
+`npm install <package>@beta` or by version.
+
 Releases before this workflow existed were published by hand and were never tagged, so
 `v0.2.0` and earlier have no tag to compare against.
