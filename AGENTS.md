@@ -151,6 +151,29 @@ yourself to start from a known cache, or write a port of your own to provoke wha
 one never does — a response that never arrives, a duplicate `id`, a reply that isn't a
 response at all.
 
+Every other helper more than one suite needs lives beside it, and nowhere else: the other fake
+ports (`createErrorPort`, `createDeadPort`, `createRecordingPort`), the `fakeSharedWorker`
+stand-in for the constructor, the `withSharedWorker`, `withDocument` and `withLocation`
+environment switches, `recorder` for collecting `onError` reports, `rejectionFrom` for the error
+a call rejected with, and `withConsoleSpies`, which silences both console channels around a test
+and hands back the spies. The browser suite imports from there too, which is why `rejectionFrom`
+takes the class to check against: in that suite it is the built bundle's
+`SharedWorkerStorageError` rather than the one the sources export.
+
+The client's Node tests are split by concern, one file to each, so a `describe` block can be
+found by its file name:
+
+| File                                               | Covers                                                                                     |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `src/shared-worker-storage.test.ts`                | Round trips over a port, correlating responses to requests, disposal, protocol versioning. |
+| `src/shared-worker-storage.options.test.ts`        | `timeoutMs`, `workerUrl`, and what is handed to the `SharedWorker` constructor.            |
+| `src/shared-worker-storage.worker-failure.test.ts` | No `SharedWorker` at all, a worker that never loads, a port that refuses the message.      |
+| `src/shared-worker-storage.diagnostics.test.ts`    | Reads that resolve empty, `onError` reports, console output, a reporter that throws.       |
+| `src/shared-worker-storage.per-query.test.ts`      | `entriesPrefix`, and TanStack's per-query persister over the storage.                      |
+
+New cases go in the file whose concern they match. All of them are picked up by the Node
+project's `src/**/*.test.ts` glob, so adding another needs no configuration.
+
 The browser suite (`src/**/*.browser.test.ts`) runs in headless Chromium through Vitest's
 Playwright provider and covers only what a fake port cannot show — one worker process behind
 two connections, the `(scriptURL, name)` pair that decides which tabs share a store, what the

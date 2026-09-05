@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
-import type { SharedWorkerStorage, SharedWorkerStorageError } from "./shared-worker-storage";
+import type { SharedWorkerStorage } from "./shared-worker-storage";
+import { recorder, rejectionFrom } from "./test-utils";
 
 /**
  * The one suite that runs against a genuine `SharedWorker` in a real browser.
@@ -63,22 +64,6 @@ let keySeq = 0;
 function uniqueKey(name: string) {
   keySeq += 1;
   return `${name}-${String(keySeq)}`;
-}
-
-/** A recorder for `onError`, and the list it appends to. */
-function recorder() {
-  const reported: SharedWorkerStorageError[] = [];
-  return { reported, onError: (error: SharedWorkerStorageError) => void reported.push(error) };
-}
-
-/** Await a call that must reject, and hand back the error it rejected with. */
-async function rejectionFrom(call: () => unknown): Promise<SharedWorkerStorageError> {
-  const error = await Promise.resolve(call()).then(
-    () => undefined,
-    (reason: unknown) => reason,
-  );
-  expect(error).toBeInstanceOf(bundle.SharedWorkerStorageError);
-  return error as SharedWorkerStorageError;
 }
 
 beforeAll(async () => {
@@ -192,7 +177,10 @@ describe("a worker whose script cannot be loaded", () => {
       onError,
     });
 
-    const error = await rejectionFrom(() => storage.setItem(uniqueKey("missing"), "v"));
+    const error = await rejectionFrom(
+      () => storage.setItem(uniqueKey("missing"), "v"),
+      bundle.SharedWorkerStorageError,
+    );
 
     expect(error.code).toBe("transport");
     // The worker is gone for good, so a later read doesn't wait for a worker
@@ -220,7 +208,10 @@ describe("a worker whose script cannot be loaded", () => {
     // longer listens for.
     await new Promise((resolve) => setTimeout(resolve, 500));
     expect(reported).toEqual([]);
-    const error = await rejectionFrom(() => storage.setItem(uniqueKey("missing"), "v"));
+    const error = await rejectionFrom(
+      () => storage.setItem(uniqueKey("missing"), "v"),
+      bundle.SharedWorkerStorageError,
+    );
     expect(error.code).toBe("disposed");
   });
 });

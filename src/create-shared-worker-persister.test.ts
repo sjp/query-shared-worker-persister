@@ -9,7 +9,14 @@ import {
   type CreateSharedWorkerPersisterOptions,
 } from "./create-shared-worker-persister";
 import { SharedWorkerStorageError } from "./shared-worker-storage";
-import { createFakePort, fakeSharedWorker, withDocument, withSharedWorker } from "./test-utils";
+import {
+  createFakePort,
+  fakeSharedWorker,
+  recorder,
+  withConsoleSpies,
+  withDocument,
+  withSharedWorker,
+} from "./test-utils";
 import { CacheStore } from "./worker/store";
 
 /** A minimal client to persist; the persister only ever serializes it. */
@@ -58,42 +65,34 @@ describe("createSharedWorkerPersister", () => {
   });
 
   it("forwards onError, so the storage's diagnostics reach the caller", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      const reported: SharedWorkerStorageError[] = [];
+    const { reported, onError } = recorder();
+    await withConsoleSpies(async ({ warn }) => {
       // A browser without the API, which is the environment the fallback is
       // worth reporting in.
       await withDocument({}, () =>
         withSharedWorker(undefined, () => {
-          createSharedWorkerPersister({ onError: (error) => void reported.push(error) });
+          createSharedWorkerPersister({ onError });
         }),
       );
       expect(reported.map((error) => error.code)).toEqual(["unsupported"]);
       expect(warn).not.toHaveBeenCalled();
-    } finally {
-      warn.mockRestore();
-    }
+    });
   });
 
   it("builds a silent no-op persister where there is no document", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const reported: SharedWorkerStorageError[] = [];
-    try {
+    const { reported, onError } = recorder();
+    await withConsoleSpies(async ({ warn }) => {
       // Server-side rendering evaluates this module too, and a server never had
       // a SharedWorker to lose, so the fallback is taken without a word.
       await withSharedWorker(undefined, async () => {
-        const persister = createSharedWorkerPersister({
-          onError: (error) => void reported.push(error),
-        });
+        const persister = createSharedWorkerPersister({ onError });
         expect(persister.mode).toBe("noop");
         await persister.persistClient(persistedClient());
         await expect(persister.restoreClient()).resolves.toBeUndefined();
       });
       expect(warn).not.toHaveBeenCalled();
       expect(reported).toEqual([]);
-    } finally {
-      warn.mockRestore();
-    }
+    });
   });
 
   it("reports mode `shared-worker` when the worker was constructed", async () => {
@@ -225,8 +224,7 @@ describe("createSharedWorkerPersister", () => {
   });
 
   it("restores nothing, instead of clearing the shared entry, when the read fails", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
+    await withConsoleSpies(async () => {
       const worker = fakeSharedWorker({ dead: true });
       await withSharedWorker(worker.FakeSharedWorker, async () => {
         const persister = createSharedWorkerPersister({ timeoutMs: 20, key: "MY_APP" });
@@ -238,9 +236,7 @@ describe("createSharedWorkerPersister", () => {
           "getItem",
         ]);
       });
-    } finally {
-      warn.mockRestore();
-    }
+    });
   });
 
   it("still clears the shared entry when the restored cache is busted", async () => {

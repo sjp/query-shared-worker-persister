@@ -1,7 +1,7 @@
-import { vi } from "vite-plus/test";
-import type { PortAdapter } from "./shared-worker-storage";
+import { expect, type Mock, vi } from "vite-plus/test";
+import { type PortAdapter, SharedWorkerStorageError } from "./shared-worker-storage";
 import { respond } from "./worker/connection";
-import type { StorageRequest } from "./worker/protocol";
+import type { StorageRequest, StorageResponse } from "./worker/protocol";
 import { CacheStore } from "./worker/store";
 
 /**
@@ -30,6 +30,49 @@ export function createFakePort(store = new CacheStore()): PortAdapter {
     },
   };
   return port;
+}
+
+/**
+ * A port that answers every request with the same worker-side error, standing in
+ * for a worker that is there and cannot do what it was asked.
+ */
+export function createErrorPort(error = "boom"): PortAdapter {
+  const port: PortAdapter = {
+    onmessage: null,
+    postMessage(request: StorageRequest) {
+      queueMicrotask(() => {
+        port.onmessage?.({
+          data: { kind: "response", id: request.id, ok: false, error },
+        } as MessageEvent<StorageResponse>);
+      });
+    },
+  };
+  return port;
+}
+
+/** A port that never answers, so only the client itself can settle a request. */
+export function createDeadPort(): PortAdapter {
+  return { onmessage: null, postMessage() {} };
+}
+
+/**
+ * A {@link createFakePort} that also keeps every request posted through it, for
+ * the tests that assert on what the client asked as well as on what it got back.
+ */
+export function createRecordingPort(store = new CacheStore()) {
+  const answering = createFakePort(store);
+  const sent: StorageRequest[] = [];
+  const port: PortAdapter = {
+    onmessage: null,
+    postMessage: (request) => {
+      sent.push(request);
+      answering.postMessage(request);
+    },
+  };
+  // The answering port replies through its own handler, so point that at
+  // whichever handler the client has installed on the port it was given.
+  answering.onmessage = (event) => port.onmessage?.(event);
+  return { port, sent, store };
 }
 
 /**
@@ -130,11 +173,11 @@ export function fakeSharedWorker({
   const instances: FakeSharedWorker[] = [];
 
   /**
-   * A port that both records what was posted and forwards it to a real
+   * A port that both spies on what was posted and forwards it to a real
    * answering port, so a single fake serves the tests that assert on traffic and
    * those that need genuine responses.
    */
-  function createRecordingPort(post: (request: StorageRequest) => void, close: () => void) {
+  function createSpiedPort(post: (request: StorageRequest) => void, close: () => void) {
     const answering = dead ? undefined : createFakePort(store);
     const port: PortAdapter = {
       onmessage: null,
@@ -153,7 +196,7 @@ export function fakeSharedWorker({
   class FakeSharedWorker {
     readonly postMessage = vi.fn<(request: StorageRequest) => void>();
     readonly close = vi.fn<() => void>();
-    readonly port = createRecordingPort(this.postMessage, this.close);
+    readonly port = createSpiedPort(this.postMessage, this.close);
     onerror: ((event: { message: string }) => void) | null = null;
 
     constructor(url: string | URL, options?: WorkerOptions) {
@@ -178,4 +221,53 @@ export function fakeSharedWorker({
       return worker;
     },
   };
+}
+
+/** An `onError` handler that records what it was given, and the list it fills. */
+export function recorder() {
+  const reported: SharedWorkerStorageError[] = [];
+  return { reported, onError: (error: SharedWorkerStorageError) => void reported.push(error) };
+}
+
+/**
+ * The error a call rejected with, asserted to be one of ours.
+ *
+ * The class to check against is a parameter because the browser suite drives the
+ * built bundle, whose `SharedWorkerStorageError` is a different class object from
+ * the one the sources export; that suite hands in the bundle's.
+ */
+export async function rejectionFrom(
+  call: () => unknown,
+  errorClass: new (...args: never[]) => SharedWorkerStorageError = SharedWorkerStorageError,
+): Promise<SharedWorkerStorageError> {
+  const error = await Promise.resolve(call()).then(
+    () => undefined,
+    (reason: unknown) => reason,
+  );
+  expect(error).toBeInstanceOf(errorClass);
+  return error as SharedWorkerStorageError;
+}
+
+/** The console channels {@link withConsoleSpies} silences, as spies. */
+export interface ConsoleSpies {
+  warn: Mock<typeof console.warn>;
+  error: Mock<typeof console.error>;
+}
+
+/**
+ * Run `fn` with both console channels silenced, restore them afterwards, and
+ * hand back whatever `fn` returned.
+ *
+ * Both are taken whichever one the test goes on to assert about, so a report on
+ * the other channel is silenced too rather than printed into the run's output.
+ */
+export async function withConsoleSpies<T>(fn: (spies: ConsoleSpies) => T | Promise<T>): Promise<T> {
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    return await fn({ warn, error });
+  } finally {
+    error.mockRestore();
+    warn.mockRestore();
+  }
 }
