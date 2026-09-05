@@ -8,7 +8,7 @@ import {
   createSharedWorkerPersister,
   type CreateSharedWorkerPersisterOptions,
 } from "./create-shared-worker-persister";
-import type { SharedWorkerStorageError } from "./shared-worker-storage";
+import { SharedWorkerStorageError } from "./shared-worker-storage";
 import { createFakePort, fakeSharedWorker, withSharedWorker } from "./test-utils";
 import { CacheStore } from "./worker/store";
 
@@ -270,8 +270,12 @@ describe("createSharedWorkerPersister", () => {
       });
       await persister.persistClient(persistedClient());
       expect(errors).toHaveLength(1);
-      expect(errors[0]).toBeInstanceOf(Error);
-      expect(String(errors[0])).toMatch(/timed out/);
+      // The hook is handed the storage's own error rather than a plain one, so
+      // a caller can decide what to do from `code` instead of matching text.
+      const [error] = errors;
+      expect(error).toBeInstanceOf(SharedWorkerStorageError);
+      expect((error as SharedWorkerStorageError).code).toBe("timeout");
+      expect(String(error)).toMatch(/timed out/);
     });
   });
 });

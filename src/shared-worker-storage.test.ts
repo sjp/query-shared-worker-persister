@@ -109,6 +109,25 @@ describe("createSharedWorkerStorage", () => {
     storage.dispose();
   });
 
+  it("clears the timer of a request the worker answered, leaving nothing scheduled", async () => {
+    vi.useFakeTimers();
+    try {
+      // Far longer than the test runs, so a timer that outlived its request
+      // would still be scheduled at the end of it. A request settles on the
+      // worker's reply, which arrives on a microtask and so is unaffected by
+      // the clock being faked.
+      const storage = createSharedWorkerStorage({ port: createFakePort(), timeoutMs: 60_000 });
+      await storage.setItem("k", "v");
+      await expect(storage.getItem("k")).resolves.toBe("v");
+      // Hundreds of requests over a page's life would otherwise each leave a
+      // timer to fire long after the request it was meant to bound.
+      expect(vi.getTimerCount()).toBe(0);
+      storage.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects a write when the worker reports an error", async () => {
     const storage = createSharedWorkerStorage({ port: createErrorPort() });
     await expect(storage.setItem("k", "v")).rejects.toThrow("boom");
@@ -957,6 +976,24 @@ describe("diagnostics", () => {
     expect((reported[0]?.cause as SharedWorkerStorageError | undefined)?.code).toBe("timeout");
   });
 
+  it("keeps a worker-side error as the cause of the read that gave up on it", async () => {
+    const { reported, onError } = recorder();
+    await withSilentConsole(async (spies) => {
+      const storage = createSharedWorkerStorage({ port: createErrorPort(), onError });
+      await expect(storage.getItem("k")).resolves.toBeNull();
+      expect(spies.warn).not.toHaveBeenCalled();
+      storage.dispose();
+    });
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.code).toBe("protocol");
+    expect(reported[0]?.message).toContain("continuing as though it were empty");
+    // The worker's own error is kept whole, so a caller can look past the
+    // description of the empty read to what the worker actually said.
+    const cause = reported[0]?.cause as SharedWorkerStorageError | undefined;
+    expect(cause?.code).toBe("protocol");
+    expect(cause?.message).toBe("boom");
+  });
+
   it("leaves the console alone in the paths that report nothing", async () => {
     const { reported, onError } = recorder();
     const storage = createSharedWorkerStorage({ port: createFakePort(), onError });
@@ -982,6 +1019,15 @@ describe("diagnostics", () => {
     const storage = createSharedWorkerStorage({ port: createFakePort() });
     storage.dispose();
     expect((await rejectionFrom(() => storage.setItem("k", "v"))).code).toBe("disposed");
+  });
+
+  it("names its errors, so a console or a reporter shows what kind of failure it is", async () => {
+    const storage = createSharedWorkerStorage({ port: createErrorPort() });
+    const error = await rejectionFrom(() => storage.setItem("k", "v"));
+    expect(error.name).toBe("SharedWorkerStorageError");
+    // The name is what prefixes the message wherever an error is stringified.
+    expect(String(error)).toBe("SharedWorkerStorageError: boom");
+    storage.dispose();
   });
 
   it("reports mode so a caller can tell a live storage from a no-op one", async () => {
