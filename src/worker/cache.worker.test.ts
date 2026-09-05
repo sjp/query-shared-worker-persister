@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import type { WorkerPort } from "./worker/connection";
-import { PROTOCOL_VERSION, type StorageRequest, type StorageResponse } from "./worker/protocol";
+import type { WorkerPort } from "./connection";
+import { PROTOCOL_VERSION, type StorageRequest, type StorageResponse } from "./protocol";
 
 /**
  * The worker entry installs its `onconnect` handler on the global scope as a

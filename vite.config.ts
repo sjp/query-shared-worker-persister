@@ -20,9 +20,12 @@ export default defineConfig({
   // its own entry so it is emitted as a sibling `dist/cache.worker.js`, which the
   // `new URL("./cache.worker.js", import.meta.url)` reference in the bundle then
   // resolves at runtime (see `connectSharedWorker` in shared-worker-storage.ts).
+  // Entries are named rather than listed by path because the name is what decides
+  // the output filename: the worker source lives in `src/worker/` with the rest of
+  // the worker half, and a bare path list would mirror that into `dist/worker/`.
   // Tests aren't entries, so no `*.test.d.ts` ends up in `dist`.
   pack: {
-    entry: ["src/index.ts", "src/cache.worker.ts"],
+    entry: { index: "src/index.ts", "cache.worker": "src/worker/cache.worker.ts" },
     platform: "browser",
     format: ["esm"],
     dts: true,

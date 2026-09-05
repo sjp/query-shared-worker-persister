@@ -1,0 +1,16 @@
+{
+  // Everything in this directory runs inside the SharedWorker, where there is no
+  // `document` and no `window`. The root config has to keep the DOM libs for the
+  // tab-side half, so this one narrows `lib` to the worker's own globals: reach
+  // for a page global in here and it is a type error rather than a run-time one
+  // that only shows up in a browser. Type checking picks the nearest config to
+  // each file, so `vp check` applies this to the whole directory on its own; the
+  // `build` script names it explicitly, because plain `tsc` reads only the root.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "ESNext.Disposable", "WebWorker"]
+  },
+  // An inherited `include` would still resolve against the root directory, so
+  // this config states its own.
+  "include": ["."]
+}

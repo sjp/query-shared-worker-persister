@@ -19,9 +19,9 @@ Docs are local at `node_modules/vite-plus/docs` or online at https://viteplus.de
 
 The package publishes two entries, and the split between them runs through the whole source
 tree. The table is in that order: the tab side first, the worker side after, and the protocol
-they meet on in between. `src/worker/connection.ts`, `src/worker/store.ts` and
-`src/worker/describe-value.ts` run inside the worker process; `src/worker/protocol.ts` is
-imported by both sides and holds nothing but the message shapes and their version.
+they meet on in between. Everything under `src/worker/` runs inside the worker process, apart
+from `src/worker/protocol.ts`, which is imported by both sides and holds nothing but the
+message shapes and their version.
 
 | File                                    | Role                                                                                                                              |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
@@ -29,7 +29,7 @@ imported by both sides and holds nothing but the message shapes and their versio
 | `src/create-shared-worker-persister.ts` | One-call wrapper: builds the storage and hands it to TanStack's async-storage persister.                                          |
 | `src/shared-worker-storage.ts`          | The client half. Constructs the worker, correlates requests to responses by `id`, owns timeouts, disposal and the no-op fallback. |
 | `src/worker/protocol.ts`                | The wire contract both halves import: the message shapes, and the version they are stamped with.                                  |
-| `src/cache.worker.ts`                   | The worker entry. Holds the one `CacheStore` and hands each connecting port to `handleConnect`.                                   |
+| `src/worker/cache.worker.ts`            | The worker entry. Holds the one `CacheStore` and hands each connecting port to `handleConnect`.                                   |
 | `src/worker/connection.ts`              | Validates incoming messages and answers them on a port. Transport-shaped but free of worker globals.                              |
 | `src/worker/store.ts`                   | The cache: a `Map<string, string>` and the operations over it. No transport, no globals.                                          |
 | `src/worker/describe-value.ts`          | Names an arbitrary value for a message or log without throwing on one JSON can't take.                                            |
@@ -44,9 +44,11 @@ User-facing behaviour — what the options mean, what consumers have to do — l
   Bundlers recognise that exact pattern and copy the sibling asset into their output. Hoisting
   it into a variable, joining the path, or computing the specifier defeats that static analysis
   and the worker silently fails to load in consumers' builds.
-- **`src/cache.worker.ts` stays a `pack.entry` and stays listed in `sideEffects`.** It is the
-  asset the URL above resolves to. Dropping the entry stops it being emitted; dropping the
-  `sideEffects` entry lets a bundler tree-shake a file whose whole purpose is its side effects.
+- **`src/worker/cache.worker.ts` stays a `pack.entry` and stays listed in `sideEffects`.** It
+  is the asset the URL above resolves to. Dropping the entry stops it being emitted; dropping
+  the `sideEffects` entry lets a bundler tree-shake a file whose whole purpose is its side
+  effects. The entry is named `cache.worker` in `pack.entry` because the name, not the source
+  path, is what the output file is called; listed by path it would land in `dist/worker/`.
 - **`dist/cache.worker.js` imports nothing.** That one file is all a consumer's bundler copies
   out of the package, so anything left beside it does not travel with it. `vp pack` builds both
   entries together and emits a module they both import as a shared chunk, which is why the
@@ -60,6 +62,11 @@ User-facing behaviour — what the options mean, what consumers have to do — l
   argument, which is what lets the Node suite drive them directly. Reaching for `self` or
   `postMessage` inside `src/worker/` moves logic into the one file that can only run in a real
   worker.
+- **The whole worker half lives in `src/worker/`, and page globals are out of scope there.**
+  `src/worker/tsconfig.json` narrows `lib` to the worker's own globals, so `document`, `window`
+  and the rest of the DOM are type errors in that directory rather than run-time failures in a
+  browser. Moving a worker file out of it puts it back under the root config and gives it the
+  DOM again. The tab-side half is checked with the DOM libs and gets no such guard in reverse.
 - **Neither side trusts a message's static type.** A SharedWorker is addressable by
   `(scriptURL, name)` from any same-origin script, so both halves check `kind` and every field
   they read before acting. A new operation needs its validation extended alongside it.
@@ -82,11 +89,16 @@ User-facing behaviour — what the options mean, what consumers have to do — l
 type checks in one pass. CI runs it via `vp run check`, so formatting drift and lint or type
 errors fail the build.
 
-The `build` script keeps its own `tsc` step in front of `vp pack`. `vp pack` emits
-declarations without checking them, so without that step a local `npm run build` would
-happily produce a package from code that does not type check. CI therefore type checks twice,
-once in `check` and once in `build`; the second pass costs little and keeps `npm run build`
-trustworthy on its own.
+The `build` script keeps its own `tsc` steps in front of `vp pack`. `vp pack` emits
+declarations without checking them, so without them a local `npm run build` would happily
+produce a package from code that does not type check. CI therefore type checks twice, once in
+`check` and once in `build`; the second pass costs little and keeps `npm run build` trustworthy
+on its own.
+
+There are two `tsc` invocations because there are two configs. `vp check` type checks each file
+under the nearest `tsconfig.json`, so it picks up `src/worker/tsconfig.json` for the worker half
+by itself; plain `tsc` reads only the config it is given, which is why `build` names the worker
+project as well. Adding another config under `src/` means adding another `tsc -p` alongside it.
 
 `npm run check:package` inspects what will actually be published: `publint` for manifest and
 file-layout mistakes, `attw` for entry points whose types and runtime code disagree. Both work
