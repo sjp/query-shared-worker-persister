@@ -52,8 +52,10 @@ history, so they summarise the visible behaviour rather than every change.
 - `@tanstack/query-async-storage-persister` and `@tanstack/query-persist-client-core` are now
   peer dependencies. The published types import from them instead of inlining private copies,
   so a consuming project must have both installed.
-- A failed transport is now sticky: once a message to the worker cannot be sent, later requests
-  settle immediately instead of each waiting out the full timeout.
+- A worker that fails to load or start is now terminal: the failure is reported once, the port
+  is closed, and every request made afterwards settles immediately with that error — writes
+  rejecting, reads resolving empty — instead of each one being posted into the void and waiting
+  out the full timeout.
 - Requests issued after `dispose()` settle immediately — writes reject, reads resolve empty —
   rather than hanging until the timeout.
 - An unusable `SharedWorker` constructor (one that throws, as in an opaque-origin document) now
@@ -114,7 +116,8 @@ history, so they summarise the visible behaviour rather than every change.
   expose `dispose()`.
 - A no-op storage fallback, with a warning, when `SharedWorker` is unavailable. Older and mobile
   browsers no longer crash on startup.
-- A warning when a message to the worker cannot be posted.
+- An error is logged, and every request in flight is rejected, when the worker fails to start or
+  sends a message that cannot be deserialized.
 
 ### Changed
 
