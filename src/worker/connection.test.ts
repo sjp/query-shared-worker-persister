@@ -272,6 +272,19 @@ describe("handleConnect", () => {
       ]);
     });
 
+    it("bounds the error it replies with for a megabyte-long operation", () => {
+      const { sent, deliver } = connect();
+      const op = "a".repeat(1024 * 1024);
+      deliver({ kind: "request", id: 5, op, key: "k" });
+      expect(sent).toHaveLength(1);
+      const [reply] = sent;
+      expect(reply).toMatchObject({ id: 5, ok: false });
+      const error = reply?.ok === false ? reply.error : "";
+      expect(error).toContain("unknown operation");
+      expect(error).toContain("(1048576 characters)");
+      expect(error.length).toBeLessThan(200);
+    });
+
     it("answers rather than throwing when reading the message itself fails", () => {
       const error = vi.spyOn(console, "error").mockImplementation(() => {});
       try {

@@ -19,6 +19,16 @@ describe("describeValue", () => {
     expect(describeValue(value)).toBe(expected);
   });
 
+  it("quotes a long string only up to its head, and says how long it was", () => {
+    const description = describeValue("x".repeat(1000));
+    expect(description).toBe(`"${"x".repeat(64)}"... (1000 characters)`);
+  });
+
+  it("quotes a string at the cut-off length in full", () => {
+    const exact = "y".repeat(64);
+    expect(describeValue(exact)).toBe(`"${exact}"`);
+  });
+
   it("describes a symbol by its own description", () => {
     expect(describeValue(Symbol("clear"))).toBe("Symbol(clear)");
   });

@@ -85,6 +85,11 @@ history, so they summarise the visible behaviour rather than every change.
 
 ### Changed
 
+- An error naming a value from a malformed message now quotes at most the first 64 characters of
+  a string and gives its length instead of repeating the whole thing. Any same-origin script can
+  open the worker, so a message whose `op` or `kind` was megabytes long was answered with a reply
+  just as large and logged as one unreadable line, on a process every tab depends on. Shorter
+  values are unchanged.
 - `@tanstack/query-async-storage-persister` and `@tanstack/query-persist-client-core` are now
   peer dependencies. The published types import from them instead of inlining private copies,
   so a consuming project must have both installed.

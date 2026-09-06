@@ -1,4 +1,13 @@
 /**
+ * How much of a string is quoted before it is cut short. A described value ends
+ * up in a reply posted back to the sender and in this worker's console, and any
+ * same-origin script can send a message whose fields are megabytes long. Long
+ * enough to recognise what arrived, short enough that the message stays a
+ * readable line and answering it stays cheap on a process every tab shares.
+ */
+const MAX_QUOTED_LENGTH = 64;
+
+/**
  * Name an arbitrary value for an error or log message without ever throwing.
  *
  * The obvious choice, `JSON.stringify`, is not safe here: it throws a
@@ -15,7 +24,11 @@ export function describeValue(value: unknown): string {
     case "string":
       // Safe: `JSON.stringify` only throws on values a string can't be, and
       // quoting makes an empty or space-padded string visible in the message.
-      return JSON.stringify(value);
+      // Only the head is quoted for an overlong one, with the full length said
+      // outright so nothing about the value is lost by not printing it.
+      return value.length > MAX_QUOTED_LENGTH
+        ? `${JSON.stringify(value.slice(0, MAX_QUOTED_LENGTH))}... (${value.length} characters)`
+        : JSON.stringify(value);
     case "bigint":
       return `${value}n`;
     case "symbol":
