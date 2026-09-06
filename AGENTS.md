@@ -24,18 +24,28 @@ from `src/worker/protocol.ts`, which is imported by both sides and holds nothing
 message shapes and the version they are stamped with. The worker half takes only types from
 it — see the invariant on the worker bundle below.
 
-| File                                          | Role                                                                                                                              |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `src/index.ts`                                | The public surface. Every export is named individually, so widening it is a deliberate edit.                                      |
-| `src/create-shared-worker-persister.ts`       | One-call wrapper: builds the storage and hands it to TanStack's async-storage persister.                                          |
-| `src/create-shared-worker-query-persister.ts` | The same for TanStack's per-query persister, deriving the storage's `entriesPrefix` from its `prefix`.                            |
-| `src/shared-worker-storage.ts`                | The client half. Constructs the worker, correlates requests to responses by `id`, owns timeouts, disposal and the no-op fallback. |
-| `src/worker/protocol.ts`                      | The wire contract both halves import: the message shapes, and the version they are stamped with.                                  |
-| `src/worker/cache.worker.ts`                  | The worker entry. Holds the one `CacheStore` and hands each connecting port to `handleConnect`.                                   |
-| `src/worker/connection.ts`                    | Validates incoming messages and answers them on a port. Transport-shaped but free of worker globals.                              |
-| `src/worker/store.ts`                         | The cache: a `Map<string, string>` and the operations over it. No transport, no globals.                                          |
-| `src/worker/describe-value.ts`                | Names an arbitrary value for a message or log without throwing on one JSON can't take.                                            |
-| `src/test-utils.ts`                           | Fakes shared by the test suites. Not a packaged entry.                                                                            |
+| File                                          | Role                                                                                                                                    |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/index.ts`                                | The public surface. Every export is named individually, so widening it is a deliberate edit.                                            |
+| `src/create-shared-worker-persister.ts`       | One-call wrapper: builds the storage and hands it to TanStack's async-storage persister.                                                |
+| `src/create-shared-worker-query-persister.ts` | The same for TanStack's per-query persister, deriving the storage's `entriesPrefix` from its `prefix`.                                  |
+| `src/shared-worker-storage.ts`                | The client half's policy. Constructs the worker, decides which failures are terminal or reported, owns disposal and the no-op fallback. |
+| `src/request-channel.ts`                      | The client half's transport. Correlates requests to responses by `id`, owns the ids, the timeouts and the checks on what arrives.       |
+| `src/storage-error.ts`                        | `SharedWorkerStorageError`, on its own so both client files can raise it without importing each other.                                  |
+| `src/worker/protocol.ts`                      | The wire contract both halves import: the message shapes, and the version they are stamped with.                                        |
+| `src/worker/cache.worker.ts`                  | The worker entry. Holds the one `CacheStore` and hands each connecting port to `handleConnect`.                                         |
+| `src/worker/connection.ts`                    | Validates incoming messages and answers them on a port. Transport-shaped but free of worker globals.                                    |
+| `src/worker/store.ts`                         | The cache: a `Map<string, string>` and the operations over it. No transport, no globals.                                                |
+| `src/worker/describe-value.ts`                | Names an arbitrary value for a message or log without throwing on one JSON can't take.                                                  |
+| `src/test-utils.ts`                           | Fakes shared by the test suites. Not a packaged entry.                                                                                  |
+
+The client half is two files by concern. `request-channel.ts` needs a port and a deadline and
+nothing else: it hands out request ids, holds what is in flight, times each one out, and refuses
+a response whose version or result shape it can't read. It knows nothing of disposal, of the
+no-op fallback or of reporting. `shared-worker-storage.ts` is where those live — it opens the
+transport, decides that a worker which failed is terminal where an undeserializable message is
+not, keeps reads from ever rejecting, and puts its own fast-fail checks in front of the
+channel's `request` precisely because the channel cannot know the storage was disposed.
 
 User-facing behaviour — what the options mean, what consumers have to do — lives in
 `README.md`; this file covers only what you need to change the code.
@@ -190,6 +200,7 @@ found by its file name:
 | File                                               | Covers                                                                                     |
 | -------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | `src/shared-worker-storage.test.ts`                | Round trips over a port, correlating responses to requests, disposal, protocol versioning. |
+| `src/request-channel.test.ts`                      | The channel alone: ids, timers, version and result-shape checks, `rejectAll`, `close`.     |
 | `src/shared-worker-storage.options.test.ts`        | `timeoutMs`, `workerUrl`, and what is handed to the `SharedWorker` constructor.            |
 | `src/shared-worker-storage.worker-failure.test.ts` | No `SharedWorker` at all, a worker that never loads, a port that refuses the message.      |
 | `src/shared-worker-storage.diagnostics.test.ts`    | Reads that resolve empty, `onError` reports, console output, a reporter that throws.       |

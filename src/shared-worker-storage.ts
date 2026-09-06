@@ -1,12 +1,14 @@
 import type { AsyncStorage } from "@tanstack/query-persist-client-core";
-import {
-  PROTOCOL_VERSION,
-  UNVERSIONED_PROTOCOL_VERSION,
-  type StorageEntries,
-  type StorageRequest,
-  type StorageResponse,
-  type StorageResult,
-} from "./worker/protocol";
+import { createRequestChannel, type PortAdapter, type RequestChannel } from "./request-channel";
+import { SharedWorkerStorageError } from "./storage-error";
+import type { StorageEntries, StorageRequest, StorageResult } from "./worker/protocol";
+
+// The transport and the error type are defined next to the code that produces
+// them, and re-exported here because this module is where a caller meets them:
+// the `port` option takes a `PortAdapter`, and every rejection and report is a
+// `SharedWorkerStorageError`.
+export type { PortAdapter } from "./request-channel";
+export { SharedWorkerStorageError, type SharedWorkerStorageErrorCode } from "./storage-error";
 
 /** Prefixes console output so a line is traceable to this package. */
 const PACKAGE_NAME = "@sjpnz/query-shared-worker-persister";
@@ -28,72 +30,6 @@ const WORKER_NAME = "TANSTACK_QUERY_SHARED_CACHE_WORKER";
  * the way to say "wait as long as it takes".
  */
 const MAX_TIMEOUT_MS = 2_147_483_647;
-
-/** Which kind of failure a {@link SharedWorkerStorageError} describes. */
-export type SharedWorkerStorageErrorCode =
-  | "unsupported"
-  | "transport"
-  | "timeout"
-  | "protocol"
-  | "disposed";
-
-/**
- * Every failure this package raises or reports, tagged with a `code` so callers
- * can branch on the cause instead of matching on message text:
- *
- * - `unsupported` — there is no `SharedWorker` here, or the constructor refused
- *   the call. The storage handed back is the no-op one, so nothing is persisted.
- * - `transport` — the worker failed after it was constructed, its connection was
- *   closed because the worker went away, or it sent a message that could not be
- *   deserialized. The first two are terminal.
- * - `timeout` — the worker did not answer within `timeoutMs`.
- * - `protocol` — the worker answered, but with an error, with a result that
- *   doesn't fit the operation it was sent, or in a protocol version this build
- *   doesn't speak.
- * - `disposed` — the request was made after `dispose()`.
- *
- * These reach a caller two ways: as the rejection of a write, and through
- * {@link CreateSharedWorkerStorageOptions.onError}. Where one failure was caused
- * by another — the `DOMException` from a refused constructor, or the request
- * failure behind a read that resolved empty — that other error is the `cause`.
- */
-export class SharedWorkerStorageError extends Error {
-  readonly code: SharedWorkerStorageErrorCode;
-
-  constructor(code: SharedWorkerStorageErrorCode, message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "SharedWorkerStorageError";
-    this.code = code;
-  }
-}
-
-/**
- * The minimal `MessagePort` surface this package uses. A real `SharedWorker`
- * port satisfies it, and so does anything else that can carry a
- * {@link StorageRequest} out and a {@link StorageResponse} back — an in-process
- * fake in a test, or another transport entirely. Pass one as
- * {@link CreateSharedWorkerStorageOptions.port}.
- *
- * Only `postMessage` and `onmessage` are required; the optional members are
- * used when present, so a fake need only implement the parts its test cares
- * about.
- */
-export interface PortAdapter {
-  postMessage: (message: StorageRequest) => void;
-  onmessage: ((event: MessageEvent<unknown>) => void) | null;
-  /** Fired when an incoming message can't be deserialized. Real `MessagePort` has this. */
-  onmessageerror?: ((event: MessageEvent) => void) | null;
-  /**
-   * Fired when the port at the other end is disconnected — the worker behind it
-   * terminated, crashed, or closed itself. A real `MessagePort` fires a `close`
-   * event at this handler in browsers that implement it; older ones simply never
-   * call it, and a fake is free to leave it out.
-   */
-  onclose?: ((event: Event) => void) | null;
-  start?: () => void;
-  /** Close the underlying port; called on disposal. Real `MessagePort` has this. */
-  close?: () => void;
-}
 
 export interface SharedWorkerStorage extends AsyncStorage {
   /**
@@ -228,7 +164,7 @@ export interface CreateSharedWorkerStorageOptions {
    * `SharedWorker`. Chiefly a test seam — pipe the messages through an
    * in-process store and the storage becomes synchronous to drive — but any
    * transport that can move a {@link StorageRequest} and return the matching
-   * {@link StorageResponse} works. Application code doesn't need it.
+   * `StorageResponse` works. Application code doesn't need it.
    *
    * Supplying a port replaces worker construction entirely, so `namespace` and
    * `workerUrl` are ignored, no support check is made, and the storage never
@@ -261,16 +197,6 @@ export interface CreateSharedWorkerStorageOptions {
    * every query mount would otherwise repeat the same line indefinitely.
    */
   onError?: ((error: SharedWorkerStorageError) => void) | undefined;
-}
-
-/** A request awaiting its matching response, plus the timer that will reject it. */
-interface Pending {
-  /** The operation asked for; fixes which result shape the response may carry. */
-  op: StorageRequest["op"];
-  resolve: (value: StorageResult) => void;
-  reject: (reason: Error) => void;
-  /** Absent when `timeoutMs` is `Infinity`, where the request has no deadline. */
-  timer: ReturnType<typeof setTimeout> | undefined;
 }
 
 /**
@@ -388,41 +314,57 @@ export function createSharedWorkerStorage(
     return createNoopStorage();
   }
 
-  const pending = new Map<number, Pending>();
-  let nextId = 1;
+  // Constructing the worker can fail outright rather than failing later through
+  // `onerror`; there is no transport to build a storage on in that case, so
+  // degrade to the same no-op storage an unsupported environment gets.
+  return createConnectedStorage(options, timeoutMs, abortedUpFront) ?? createNoopStorage();
+}
+
+/**
+ * The storage for an environment that can carry the protocol. It opens the
+ * transport — a `SharedWorker` of its own, or the caller's injected port — and
+ * owns everything whose meaning depends on this storage's state rather than on
+ * one request: which failures are terminal, which are reported and how often,
+ * what a read does with one, and what disposal settles. Correlating requests to
+ * responses is the channel's job, and the fast-fail checks below sit in front of
+ * it precisely because the channel has no idea this storage was disposed.
+ *
+ * `undefined` when the `SharedWorker` constructor refused the call outright, so
+ * there is nothing to build a storage on and the caller falls back to the no-op
+ * one. A storage from an already-aborted signal is not that case: it opens no
+ * transport either, but it is a storage, and it comes back in the state a
+ * `dispose()` straight after construction would leave it in.
+ */
+function createConnectedStorage(
+  options: CreateSharedWorkerStorageOptions,
+  timeoutMs: number,
+  abortedUpFront: boolean,
+): SharedWorkerStorage | undefined {
   // An already-aborted signal starts the storage in the state `dispose()` would
   // leave it in, which is also what keeps a transport from being opened below.
   let disposed = abortedUpFront;
-  let closed = false;
   // Set once the transport is beyond recovery; every later request rejects with it.
   let fatalError: SharedWorkerStorageError | undefined;
   // Set the first time a read is answered by disposal, so the rest stay quiet.
   let disposedReadReported = false;
-
-  function rejectPending(error: SharedWorkerStorageError) {
-    for (const entry of pending.values()) {
-      if (entry.timer !== undefined) clearTimeout(entry.timer);
-      entry.reject(error);
-    }
-    pending.clear();
-  }
+  // Assigned below once there is a port to talk over; stays `undefined` for a
+  // storage that was disposed before it opened one. Declared ahead of the
+  // handlers the channel is given, which reach back for it when the transport
+  // fails.
+  let channel: RequestChannel | undefined;
+  // Set below when a `signal` is supplied; detaches the abort listener so a
+  // manual `dispose()` doesn't leave this storage — its pending requests and
+  // its closed port — reachable from a signal that may never abort.
+  let detachAbortListener: (() => void) | undefined;
 
   /**
-   * Detach every handler this storage installed and close the port. Safe to
-   * call more than once. Detaching matters as much as closing: a handler left
-   * on the `SharedWorker` object keeps the whole storage — its pending map, its
-   * options, its port — reachable from an event that may never fire.
+   * Let go of the transport: this package's handler off the `SharedWorker`
+   * object, the channel's off the port, and the port closed. Safe to call more
+   * than once, and it settles nothing on its own.
    */
-  function closePort() {
-    if (closed) return;
-    closed = true;
-    // A storage disposed before it opened a connection has nothing to detach.
-    if (!connection) return;
-    connection.detach();
-    connection.port.onmessage = null;
-    connection.port.onmessageerror = null;
-    connection.port.onclose = null;
-    connection.port.close?.();
+  function releaseTransport() {
+    connection?.detach();
+    channel?.close();
   }
 
   // The worker itself failing leaves nothing to talk to, and the failure can't
@@ -443,8 +385,8 @@ export function createSharedWorkerStorage(
     // nothing.
     if (disposed) return;
     fatalError = error;
-    closePort();
-    rejectPending(error);
+    releaseTransport();
+    channel?.rejectAll(error);
     report(options, "error", error);
   }
 
@@ -458,161 +400,32 @@ export function createSharedWorkerStorage(
         // behind it and so nothing of ours to take back off it.
         { port: options.port, detach: () => {} }
       : connectSharedWorker(options, handleWorkerFailure);
-  const port = connection?.port;
 
-  // Constructing the worker can fail outright rather than failing later through
-  // `onerror`; there is no transport to set up in that case, so degrade to the
-  // same no-op storage an unsupported environment gets. The other way to reach
-  // here without a port is the aborted signal above, which keeps its storage.
-  if (!port && !abortedUpFront) return createNoopStorage();
+  // No connection where one was wanted means the constructor refused; there is
+  // no storage to hand back. The other way to be here without one is the
+  // aborted signal above, which keeps its storage.
+  if (!connection && !abortedUpFront) return undefined;
 
-  // Only a storage that has a port has anything to listen to or start.
-  if (port) {
-    port.onmessage = (event: MessageEvent<unknown>) => {
-      const message = event.data;
-      // The worker is shared by `(scriptURL, name)`, so any same-origin script
-      // can open the same port and post to it. Only messages shaped like our
-      // responses are allowed to settle a pending request; everything else is
-      // not ours.
-      if (!isStorageResponse(message)) return;
-      const entry = pending.get(message.id);
-      if (!entry) return; // already timed out, or a stray message — ignore
-      pending.delete(message.id);
-      if (entry.timer !== undefined) clearTimeout(entry.timer);
-      // The worker runs whichever build of this package the first tab to
-      // connect loaded, which need not be this one. A response written to a
-      // wire format this build doesn't speak can't be read as one, so it fails
-      // the request rather than being decoded on the chance that it fits, and
-      // names both versions so the mismatch isn't mistaken for a bad worker.
-      const version = message.version ?? UNVERSIONED_PROTOCOL_VERSION;
-      if (version !== PROTOCOL_VERSION) {
-        entry.reject(
-          new SharedWorkerStorageError(
-            "protocol",
-            `SharedWorker speaks protocol version ${version}, this build speaks ${PROTOCOL_VERSION}`,
-          ),
-        );
-        return;
-      }
-      if (message.ok) {
-        // The envelope alone doesn't say which result shape is legal - that
-        // follows from the request. Checking it against the operation we sent
-        // keeps a reply from resolving `getItem` with an array, or `entries`
-        // with a bare string, in a caller that has no reason to expect either.
-        if (matchesOperation(entry.op, message.result)) entry.resolve(message.result);
-        else {
-          entry.reject(
-            new SharedWorkerStorageError(
-              "protocol",
-              `SharedWorker returned an unexpected ${entry.op} result`,
-            ),
-          );
-        }
-      } else {
-        entry.reject(new SharedWorkerStorageError("protocol", message.error));
-      }
-    };
-    // One response the structured clone algorithm couldn't reconstruct. The
-    // event says nothing about which request it belonged to, and the port is
-    // still good, so this is reported and otherwise left alone: the one request
-    // whose answer was lost settles by its own timeout, and every other request
-    // in flight goes on to settle on its own response. Rejecting the whole
-    // pending map here would instead fail concurrent writes for a fault that
-    // was not theirs and resolve concurrent reads empty, and each of those
-    // reads would report the same bad message a second time.
-    port.onmessageerror = () => {
-      report(
-        options,
-        "error",
-        new SharedWorkerStorageError(
-          "transport",
-          "SharedWorker sent a message that could not be deserialized",
-        ),
-      );
-    };
-    // The worker going away after it started: terminated by the browser under
-    // memory pressure or after a crash, killed from devtools, or closing
-    // itself. `postMessage` on a port whose other end is gone is dropped in
-    // silence, so without this signal every later request would wait out its
-    // full timeout for an answer that can never come, for the life of the tab.
-    // It is as terminal as a worker that never started — there is no worker
-    // left to reconnect to, and a caller who wants another builds a new
-    // storage — so it takes the same path.
-    port.onclose = () => {
-      handleWorkerFailure(
-        new SharedWorkerStorageError("transport", "SharedWorker connection was closed"),
-      );
-    };
-    port.start?.();
-  }
+  if (connection) channel = openChannel(connection.port, timeoutMs, options, handleWorkerFailure);
 
-  /**
-   * Post one request and resolve with its response. The caller supplies a
-   * builder rather than a finished message because the `id` is allocated here:
-   * handing the builder the id lets it construct a whole {@link StorageRequest}
-   * in one go, so the message is type checked against the operation it names
-   * instead of being assembled from a partial and cast back.
-   */
+  /** Post one request, unless this storage already knows how it has to end. */
   function request(build: (id: number) => StorageRequest): Promise<StorageResult> {
     // Once the port is closed the browser drops `postMessage` silently, so a
-    // request issued here would sit in `pending` and only fail at the timeout —
-    // a misleading error, ten seconds late, holding a timer the whole way. Fail
+    // request issued here would sit pending and only fail at the timeout — a
+    // misleading error, ten seconds late, holding a timer the whole way. Fail
     // fast instead. Writes reject rather than resolve, so one that never reached
     // the worker is surfaced to `createAsyncStoragePersister`'s `retry` hook;
     // `read` converts the same rejection into an empty result for reads.
-    // A missing port says the same thing as `disposed`, since the only storage
-    // built without one is the storage that was disposed before it opened one;
-    // checking it here is also what leaves something to post to below.
-    if (disposed || !port) return Promise.reject(disposedError());
+    // A missing channel says the same thing as `disposed`, since the only
+    // storage built without one is the storage that was disposed before it
+    // opened a transport; checking it here is also what leaves something to
+    // post through below.
+    if (disposed || !channel) return Promise.reject(disposedError());
     // Likewise once the worker has failed: there is no port left to answer, so
     // hand back the transport error that explains why rather than a timeout that
     // doesn't.
     if (fatalError) return Promise.reject(fatalError);
-
-    const id = nextId++;
-    const message = build(id);
-    return new Promise<StorageResult>((resolve, reject) => {
-      // `Infinity` asks for no deadline at all, so no timer is created: the
-      // request stays pending until the worker answers, the transport fails, or
-      // the storage is disposed.
-      const timer =
-        timeoutMs === Number.POSITIVE_INFINITY
-          ? undefined
-          : setTimeout(() => {
-              pending.delete(id);
-              reject(
-                new SharedWorkerStorageError(
-                  "timeout",
-                  `SharedWorker storage request timed out after ${timeoutMs}ms`,
-                ),
-              );
-            }, timeoutMs);
-      pending.set(id, { op: message.op, resolve, reject, timer });
-      // A port can refuse the message itself — a real `MessagePort` throws when
-      // a value cannot be structured-cloned. The throw would otherwise escape
-      // the executor and reject this promise while leaving the timer scheduled
-      // and the entry in `pending`, so a request that never left the tab would
-      // still be settled a second time at its deadline. Unwind it here instead,
-      // and reject with the same error shape the rest of the transport uses so
-      // a caller branching on `code` — or a read turning the failure into an
-      // empty result — sees no special case.
-      try {
-        // Stamped here rather than in each builder above so every request
-        // carries it, and so a builder stays free to name only its operation.
-        port.postMessage({ ...message, version: PROTOCOL_VERSION });
-      } catch (cause) {
-        pending.delete(id);
-        if (timer !== undefined) clearTimeout(timer);
-        reject(
-          new SharedWorkerStorageError(
-            "transport",
-            "Could not post a request to the SharedWorker " +
-              `(${cause instanceof Error ? cause.message : String(cause)})`,
-            { cause },
-          ),
-        );
-      }
-    });
+    return channel.request(build);
   }
 
   /**
@@ -648,44 +461,97 @@ export function createSharedWorkerStorage(
       // every read, so a cache that silently stays cold still says why.
       const alreadyReported = error === fatalError || (disposedRead && disposedReadReported);
       if (disposedRead) disposedReadReported = true;
-      if (!alreadyReported) {
-        const reason = error instanceof Error ? error.message : String(error);
-        // Reported under the code of the failure behind it, which is also kept
-        // as the `cause`: a caller filtering on `timeout` wants this read too.
-        report(
-          options,
-          "warn",
-          new SharedWorkerStorageError(
-            error instanceof SharedWorkerStorageError ? error.code : "transport",
-            `Could not read from the SharedWorker cache (${reason}); ` +
-              "continuing as though it were empty.",
-            { cause: error },
-          ),
-        );
-      }
+      if (!alreadyReported) report(options, "warn", emptyReadReport(error));
       return empty;
     });
   }
-
-  // Set below when a `signal` is supplied; detaches the abort listener so a
-  // manual `dispose()` doesn't leave this storage — its pending map and its
-  // closed port — reachable from a signal that may never abort.
-  let detachAbortListener: (() => void) | undefined;
 
   function dispose() {
     if (disposed) return;
     disposed = true;
     detachAbortListener?.();
     detachAbortListener = undefined;
-    rejectPending(disposedError());
-    closePort();
+    channel?.rejectAll(disposedError());
+    releaseTransport();
   }
 
-  // Each method narrows the shared result type to the shape its operation is
-  // defined to return. The cast is sound because `request` only resolves a
-  // result that matched the operation it was sent for, and a read that failed
-  // falls back to the empty value of that same shape.
-  const storage: SharedWorkerStorage = {
+  const storage = createStorageMethods(options, { read, request, dispose });
+
+  // Bind disposal to the caller's signal. `dispose` is idempotent, so an abort
+  // after a manual dispose (or vice versa) is harmless. A manual dispose also
+  // removes the listener: the signal may outlive many storages — one
+  // long-lived controller shared by a component that remounts, say — and each
+  // listener left on it pins the storage it closes over.
+  //
+  // A signal that had already aborted needs no listener at all: the storage was
+  // built disposed, and a second abort would have nothing left to tear down.
+  if (options.signal && !abortedUpFront) {
+    const signal = options.signal;
+    const onAbort = () => dispose();
+    signal.addEventListener("abort", onAbort, { once: true });
+    detachAbortListener = () => signal.removeEventListener("abort", onAbort);
+  }
+
+  return storage;
+}
+
+/**
+ * Open a request channel over `port` and give it this package's reading of the
+ * two events on it that name no request and so cannot be settled as one.
+ *
+ * An undeserializable message is the lesser fault: the port is still good, so it
+ * is reported and nothing else — the one request whose answer was lost settles
+ * on its own timeout while the rest go on to settle on their own responses. A
+ * port that closes is the greater one, and as terminal as a worker that never
+ * started: there is no worker left to reconnect to, and a caller who wants
+ * another builds a new storage.
+ */
+function openChannel(
+  port: PortAdapter,
+  timeoutMs: number,
+  options: CreateSharedWorkerStorageOptions,
+  onFatal: (error: SharedWorkerStorageError) => void,
+): RequestChannel {
+  return createRequestChannel(port, timeoutMs, {
+    onUndeliverableMessage: () => {
+      report(
+        options,
+        "error",
+        new SharedWorkerStorageError(
+          "transport",
+          "SharedWorker sent a message that could not be deserialized",
+        ),
+      );
+    },
+    onDisconnect: () => {
+      onFatal(new SharedWorkerStorageError("transport", "SharedWorker connection was closed"));
+    },
+  });
+}
+
+/** The transport, already wrapped in the storage's policy, that the methods below run on. */
+interface StorageOperations {
+  /** Run a read: any failure resolves as the `empty` value rather than rejecting. */
+  read: (build: (id: number) => StorageRequest, empty: StorageResult) => Promise<StorageResult>;
+  /** Run a write: a failure rejects, so the persister's `retry` hook hears about it. */
+  request: (build: (id: number) => StorageRequest) => Promise<StorageResult>;
+  dispose: () => void;
+}
+
+/**
+ * The `AsyncStorage` surface itself: each operation as the request that carries
+ * it, and disposal under both of its names.
+ *
+ * Each method narrows the shared result type to the shape its operation is
+ * defined to return. The cast is sound because `request` only resolves a result
+ * that matched the operation it was sent for, and a read that failed falls back
+ * to the empty value of that same shape.
+ */
+function createStorageMethods(
+  options: CreateSharedWorkerStorageOptions,
+  { read, request, dispose }: StorageOperations,
+): SharedWorkerStorage {
+  return {
     mode: "shared-worker",
     getItem: (key) =>
       read((id) => ({ kind: "request", id, op: "getItem", key }), null) as Promise<string | null>,
@@ -716,23 +582,21 @@ export function createSharedWorkerStorage(
     // the method under the symbol `using` will look for.
     [Symbol.dispose]: dispose,
   };
+}
 
-  // Bind disposal to the caller's signal. `dispose` is idempotent, so an abort
-  // after a manual dispose (or vice versa) is harmless. A manual dispose also
-  // removes the listener: the signal may outlive many storages — one
-  // long-lived controller shared by a component that remounts, say — and each
-  // listener left on it pins the storage it closes over.
-  //
-  // A signal that had already aborted needs no listener at all: the storage was
-  // built disposed, and a second abort would have nothing left to tear down.
-  if (options.signal && !abortedUpFront) {
-    const signal = options.signal;
-    const onAbort = () => dispose();
-    signal.addEventListener("abort", onAbort, { once: true });
-    detachAbortListener = () => signal.removeEventListener("abort", onAbort);
-  }
-
-  return storage;
+/**
+ * The report for a read that resolved empty instead of rejecting. It is raised
+ * under the code of the failure behind it, which is also kept as the `cause`: a
+ * caller filtering on `timeout` wants this read too.
+ */
+function emptyReadReport(error: unknown): SharedWorkerStorageError {
+  const reason = error instanceof Error ? error.message : String(error);
+  return new SharedWorkerStorageError(
+    error instanceof SharedWorkerStorageError ? error.code : "transport",
+    `Could not read from the SharedWorker cache (${reason}); ` +
+      "continuing as though it were empty.",
+    { cause: error },
+  );
 }
 
 /**
@@ -861,51 +725,6 @@ function validateWorkerUrl(workerUrl: string | URL): void {
 /** The rejection every request made after `dispose()` gets. */
 function disposedError(): SharedWorkerStorageError {
   return new SharedWorkerStorageError("disposed", "SharedWorker storage disposed");
-}
-
-/**
- * Whether `data` is a well-formed {@link StorageResponse}. Checked field by
- * field rather than trusting the declared `MessageEvent` type, which says
- * nothing about what actually arrives on the port. An `ok: true` message whose
- * `result` is missing fails this test, so a request is never resolved with a
- * value the protocol doesn't allow.
- */
-function isStorageResponse(data: unknown): data is StorageResponse {
-  if (typeof data !== "object" || data === null) return false;
-  const message = data as Record<string, unknown>;
-  if (message.kind !== "response" || typeof message.id !== "number") return false;
-  // A worker older than the field sends none, which is the one absence this
-  // envelope allows; anything other than a number in its place is not a version
-  // and so not one of our responses.
-  if (message.version !== undefined && typeof message.version !== "number") return false;
-  if (message.ok === true) return isStorageResult(message.result);
-  return message.ok === false && typeof message.error === "string";
-}
-
-/** Whether `value` is one of the result shapes the protocol allows at all. */
-function isStorageResult(value: unknown): value is StorageResult {
-  return typeof value === "string" || value === null || isStorageEntries(value);
-}
-
-/** Whether `value` is an array of `[key, value]` string pairs. */
-function isStorageEntries(value: unknown): value is StorageEntries {
-  return (
-    Array.isArray(value) &&
-    value.every(
-      (entry) =>
-        Array.isArray(entry) &&
-        entry.length === 2 &&
-        typeof entry[0] === "string" &&
-        typeof entry[1] === "string",
-    )
-  );
-}
-
-/** Whether `result` is the shape `op` is defined to answer with. */
-function matchesOperation(op: StorageRequest["op"], result: StorageResult): boolean {
-  return op === "entries"
-    ? isStorageEntries(result)
-    : typeof result === "string" || result === null;
 }
 
 /**
