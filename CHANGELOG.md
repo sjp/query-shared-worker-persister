@@ -138,6 +138,14 @@ history, so they summarise the visible behaviour rather than every change.
 - The supported Node range is now `>=24`, raised from `>=20`. It only governs who can build and
   test this repository — the published code runs in the browser — and 24 is the oldest version
   the toolchain and the test suites are actually run on. Node 20 reached end of life in April 2026.
+- The published JavaScript no longer carries the JSDoc from the source, and ships source maps
+  instead. The documentation is unchanged in the declaration files, which is where an editor
+  reads it from; in the runtime files it was more than half the bytes. It cost `cache.worker.js`
+  most, because bundlers copy that file out of the package and serve it as published, so its
+  comments were fetched on every cold load. `dist/index.js` falls from 24.1 kB to 11.0 kB and
+  `dist/cache.worker.js` from 9.8 kB to 4.2 kB, and `dist/index.js.map` and
+  `dist/cache.worker.js.map` now lead a stack trace in either file back to the TypeScript it
+  came from. The `/* @__PURE__ */` annotations a consumer's bundler tree-shakes by are kept.
 
 ### Fixed
 

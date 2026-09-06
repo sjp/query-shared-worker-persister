@@ -42,6 +42,20 @@ export default defineConfig({
     // for them. The reference pulls the lib in from the declaration file itself,
     // so nobody has to widen their own `lib` to use this package.
     banner: { dts: '/// <reference lib="esnext.disposable" />' },
+    // The JSDoc in the source is public documentation, but the declarations are
+    // where a consumer's editor reads it from, so keeping it in the JavaScript
+    // as well only pads the files. It costs the worker most: consumers' bundlers
+    // copy `cache.worker.js` out of the package and serve it as emitted, so its
+    // comments are fetched on every cold load, where `index.js` at least goes
+    // through the consumer's minifier. `annotation` has to stay on — the
+    // `/* @__PURE__ */` markers rolldown emits are what let a consumer's bundler
+    // drop the module-level `Set` in the worker and the like — and `legal` keeps
+    // any licence header a dependency asks to carry.
+    outputOptions: { comments: { legal: true, annotation: true, jsdoc: false } },
+    // Without the comments the emitted JavaScript is further still from the
+    // TypeScript it came from, so ship the maps that lead a stack trace back.
+    // `files` already covers all of `dist`, so they need no manifest change.
+    sourcemap: true,
   },
   // Two suites, because they answer different questions. The Node suite drives
   // the code through fake ports and covers the logic exhaustively; the browser
