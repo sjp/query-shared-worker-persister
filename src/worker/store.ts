@@ -5,10 +5,8 @@ import type { StorageEntries, StorageRequest, StorageResult } from "./protocol";
  * The cache itself is a plain in-memory string store, exactly the shape
  * `createAsyncStoragePersister` expects (values are already-serialized strings).
  *
- * This is deliberately free of any `SharedWorker` / `MessagePort` globals so it
- * can be unit-tested directly, and so `cache.worker.ts` stays a thin transport
- * shell around it. When the SharedWorker process is torn down (last tab closed),
- * this Map is garbage-collected with it - that is the whole cleanup story.
+ * When the SharedWorker process is torn down (last tab closed),
+ * this Map is garbage-collected with it.
  */
 export class CacheStore {
   private readonly map = new Map<string, string>();
@@ -26,17 +24,11 @@ export class CacheStore {
   }
 
   /**
-   * The key/value pairs currently held, as a snapshot array — every one of them,
-   * or only those whose key starts with `prefix`. Copied out of the Map rather
-   * than exposing its iterator so the result survives the structured clone back
-   * to the client, and so later writes can't mutate what a caller is still
-   * reading.
+   * The key/value pairs currently held, as a snapshot array so later writes can't
+   * mutate what a caller is still reading.
    *
-   * The filter is here, in the worker, because this feeds per-query
-   * persistence: it iterates the store to find the entries under its own key
-   * prefix, and one store is shared by every tab and every application on this
-   * worker. Narrowing before the reply is what keeps a caller from being handed
-   * — and paying the clone cost of — the entries it is about to discard.
+   * The filter is in the worker to prevent a potentially large amount of
+   * messaging over the port.
    */
   entries(prefix?: string): StorageEntries {
     const pairs = Array.from(this.map.entries());

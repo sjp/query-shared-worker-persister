@@ -10,11 +10,6 @@ import {
 import { CacheStore } from "./worker/store";
 
 /**
- * Helpers shared by the test suites in this directory. Not one of the packaged
- * entries, so nothing here ships in `dist`.
- */
-
-/**
  * A fake `MessagePort` that stands in for the SharedWorker connection: it pipes
  * client requests through a real {@link CacheStore} and replies asynchronously,
  * echoing the request `id` — exactly like `cache.worker.ts` does.

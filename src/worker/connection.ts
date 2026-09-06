@@ -194,8 +194,6 @@ export function handleConnect(
     }
   };
   port.onmessageerror = () => {
-    // The request is gone and its `id` with it, so the client can only find out
-    // by timing out. Log so the cause is visible in the worker's console.
     console.error(`[${PACKAGE_NAME}] Received a message that could not be deserialized`);
   };
   port.start?.();

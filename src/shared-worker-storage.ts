@@ -10,7 +10,7 @@ import type { StorageEntries, StorageRequest, StorageResult } from "./worker/pro
 export type { PortAdapter } from "./request-channel";
 export { SharedWorkerStorageError, type SharedWorkerStorageErrorCode } from "./storage-error";
 
-/** Prefixes console output so a line is traceable to this package. */
+// a console output prefix so a line is traceable to this package
 const PACKAGE_NAME = "@sjpnz/query-shared-worker-persister";
 
 /**
@@ -20,15 +20,7 @@ const PACKAGE_NAME = "@sjpnz/query-shared-worker-persister";
  */
 const WORKER_NAME = "TANSTACK_QUERY_SHARED_CACHE_WORKER";
 
-/**
- * The longest delay `setTimeout` can hold. The delay is stored as a 32-bit
- * signed integer, and a larger one overflows: browsers fire it on the next
- * tick, Node warns and treats it as 1ms. Either way a `timeoutMs` above this
- * would expire immediately rather than far in the future, which is the opposite
- * of what the caller asked for. Rejected up front rather than clamped, since
- * silently substituting a different deadline is its own surprise; `Infinity` is
- * the way to say "wait as long as it takes".
- */
+// the longest delay `setTimeout` can hold
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
 export interface SharedWorkerStorage extends AsyncStorage {
@@ -379,10 +371,6 @@ function createConnectedStorage(
   // The bookkeeping runs before the report, so the storage is left consistent
   // whatever the caller's reporter does with the error it is handed.
   function handleWorkerFailure(error: SharedWorkerStorageError) {
-    // A worker that dies after the caller let go of the storage is not news:
-    // every request is already rejecting with `disposed`, and nothing the
-    // caller could do would change that. Leave the error state alone and say
-    // nothing.
     if (disposed) return;
     fatalError = error;
     releaseTransport();

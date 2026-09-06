@@ -50,8 +50,8 @@ export const UNVERSIONED_PROTOCOL_VERSION = 1;
 
 /**
  * Carried by every message this build sends, in either direction. Optional
- * because the peer may be older than the field — read one that lacks it as
- * {@link UNVERSIONED_PROTOCOL_VERSION} — not because a sender may leave it off.
+ * because the peer may be older than the field. Fall back to assuming
+ * {@link UNVERSIONED_PROTOCOL_VERSION} is missing.
  */
 interface Versioned {
   version?: number | undefined;
