@@ -1,6 +1,6 @@
 {
   "name": "@sjpnz/query-shared-worker-persister",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A persister for storing query data in a SharedWorker, to be used with TanStack/Query",
   "keywords": [
     "cache",

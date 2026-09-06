@@ -10,6 +10,8 @@ history, so they summarise the visible behaviour rather than every change.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-06
+
 ### Added
 
 - `PROTOCOL_VERSION`, the wire protocol version this build speaks, so a `port` implementation
