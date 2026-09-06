@@ -13,8 +13,8 @@ jobs:
 
     permissions:
       contents: read
-      # Lets npm mint the provenance attestation from this job's OIDC token, and
-      # authenticate to the registry without a long-lived token in secrets.
+      # Lets npm mint the provenance attestation from this job's OIDC token.
+      # Registry authentication is separate, and comes from the NPM_TOKEN secret.
       id-token: write
 
     steps:
@@ -74,6 +74,16 @@ jobs:
       # version the project already pins rather than whatever the runner ships.
       - name: Match the pinned npm
         run: npm install --global "npm@$(node --print "require('./package.json').packageManager.split('@')[1]")"
+      # npm reads credentials from an .npmrc, and setup-vp does not write one.
+      # The token stays out of the file and out of the runner's disk: npm expands
+      # ${NPM_TOKEN} from the environment each time it reads the line, so only the
+      # steps below that are given the secret can authenticate.
+      - name: Authenticate to the npm registry
+        run: echo '//registry.npmjs.org/:_authToken=${NPM_TOKEN}' > "$HOME/.npmrc"
       - name: List the files that will be published
         run: npm publish --dry-run --tag "$DIST_TAG"
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
       - run: npm publish --provenance --access public --tag "$DIST_TAG"
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
