@@ -8,6 +8,7 @@ import {
   createDeadPort,
   createFakePort,
   fakeSharedWorker,
+  withConsoleSpies,
   withLocation,
   withSharedWorker,
 } from "./test-utils";
@@ -159,6 +160,31 @@ describe("the workerUrl option", () => {
         ).not.toThrow();
       }),
     );
+  });
+
+  it("leaves a value that is not a URL at all to the constructor", async () => {
+    // `new URL("http://[")` throws whatever base it is given, so there is no
+    // resolved origin to hold against the page's and nothing this check can say.
+    // The browser refuses the same value a moment later, and its refusal already
+    // names the option, so the caller is told either way.
+    await withConsoleSpies(async ({ warn }) => {
+      class ThrowingSharedWorker {
+        constructor() {
+          throw new DOMException("the URL is invalid", "SyntaxError");
+        }
+      }
+      await withLocation(page, () =>
+        withSharedWorker(ThrowingSharedWorker, () => {
+          let storage!: SharedWorkerStorage;
+          expect(() => {
+            storage = createSharedWorkerStorage({ workerUrl: "http://[" });
+          }).not.toThrow();
+          expect(storage.mode).toBe("noop");
+          expect(warn).toHaveBeenCalledTimes(1);
+          expect(warn.mock.calls[0]?.[0]).toContain("workerUrl http://[");
+        }),
+      );
+    });
   });
 
   it("is not checked when a port is injected, since no worker is constructed", async () => {

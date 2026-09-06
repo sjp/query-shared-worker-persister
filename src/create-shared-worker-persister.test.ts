@@ -15,6 +15,7 @@ import {
   recorder,
   withConsoleSpies,
   withDocument,
+  withLocation,
   withSharedWorker,
 } from "./test-utils";
 import { CacheStore } from "./worker/store";
@@ -62,6 +63,56 @@ describe("createSharedWorkerPersister", () => {
         /timeoutMs must be a number greater than 0/,
       );
     });
+  });
+
+  it("accepts Infinity as a timeoutMs, so a request waits as long as it takes", async () => {
+    vi.useFakeTimers();
+    try {
+      const { FakeSharedWorker } = fakeSharedWorker({ dead: true });
+      await withSharedWorker(FakeSharedWorker, async () => {
+        const persister = createSharedWorkerPersister({
+          timeoutMs: Number.POSITIVE_INFINITY,
+        });
+        const removing = Promise.resolve(persister.removeClient());
+        const settled = vi.fn();
+        void removing.then(settled, settled);
+        // Well past the default deadline, so a request still standing here can
+        // only be one the option was carried through for.
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(settled).not.toHaveBeenCalled();
+        persister.dispose();
+        await expect(removing).rejects.toThrow(/disposed/);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects an empty namespace, so a bad option fails at construction", async () => {
+    const { FakeSharedWorker } = fakeSharedWorker();
+    await withSharedWorker(FakeSharedWorker, () => {
+      // The empty string names the default worker, so it would hand back a
+      // persister quietly sharing the store the caller asked to stay out of.
+      expect(() => createSharedWorkerPersister({ namespace: "" })).toThrow(TypeError);
+      expect(() => createSharedWorkerPersister({ namespace: "" })).toThrow(
+        /namespace must not be empty/,
+      );
+    });
+  });
+
+  it("rejects a cross-origin workerUrl, so a bad option fails at construction", async () => {
+    const { FakeSharedWorker } = fakeSharedWorker();
+    await withLocation({ href: "https://app.test/index.html" }, () =>
+      withSharedWorker(FakeSharedWorker, () => {
+        // No browser will load that script, so the persister would be a no-op
+        // wearing the mode of a working one.
+        const cdn = "https://cdn.test/cache.worker.js";
+        expect(() => createSharedWorkerPersister({ workerUrl: cdn })).toThrow(TypeError);
+        expect(() => createSharedWorkerPersister({ workerUrl: cdn })).toThrow(
+          /workerUrl must be on the page's own origin/,
+        );
+      }),
+    );
   });
 
   it("forwards onError, so the storage's diagnostics reach the caller", async () => {

@@ -33,6 +33,12 @@ describe("describeValue", () => {
     expect(describeValue(Symbol("clear"))).toBe("Symbol(clear)");
   });
 
+  it("describes a symbol that has no description", () => {
+    // There is nothing to name it by, and the empty parentheses are still the
+    // useful part of the answer: what arrived was a symbol.
+    expect(describeValue(Symbol())).toBe("Symbol()");
+  });
+
   it("describes a cyclic object without walking into it", () => {
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;

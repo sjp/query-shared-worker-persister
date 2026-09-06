@@ -20,12 +20,15 @@ async function loadWorker() {
   const { onconnect } = scope;
   if (!onconnect) throw new Error("the worker installed no onconnect handler");
 
+  /** Fire a connect event, as the browser does, carrying the ports it names. */
+  const fire = (ports: WorkerPort[]) => onconnect({ ports } as unknown as MessageEvent);
+
   /** Connect a tab, as the browser does when a page opens the shared worker. */
-  return function connect() {
+  const connect = () => {
     const responses: StorageResponse[] = [];
     const port: WorkerPort = { onmessage: null, postMessage: (message) => responses.push(message) };
     // A real connect event carries the tab's end of the channel in `ports`.
-    onconnect({ ports: [port] } as unknown as MessageEvent);
+    fire([port]);
     return {
       responses,
       /** Post a request the way a connected tab would, and read the reply. */
@@ -35,6 +38,11 @@ async function loadWorker() {
       },
     };
   };
+
+  return Object.assign(connect, {
+    /** Fire a connect event carrying no port at all, which `ports` allows for. */
+    withoutPort: () => fire([]),
+  });
 }
 
 describe("the SharedWorker entry", () => {
@@ -69,6 +77,19 @@ describe("the SharedWorker entry", () => {
       ok: true,
       result: [["k", "v"]],
     });
+  });
+
+  it("has nothing to wire up for a connect event carrying no port", async () => {
+    const connect = await loadWorker();
+    // Indexing `ports` cannot promise a port is there, and a handler that threw
+    // on the absence would take down the event the browser has no answer for.
+    expect(() => connect.withoutPort()).not.toThrow();
+    // The store the worker holds is untouched by it, so the next tab to arrive
+    // is served as though the empty event had never happened.
+    const tab = connect();
+    expect(tab.send({ kind: "request", id: 1, op: "setItem", key: "k", value: "v" })?.ok).toBe(
+      true,
+    );
   });
 
   it("does not answer a malformed message that carries no id", async () => {
