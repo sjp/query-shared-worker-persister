@@ -48,9 +48,17 @@ const opened: SharedWorkerStorage[] = [];
 
 /** Open a storage against the built worker and dispose it after the test. */
 function open(options: Parameters<Bundle["createSharedWorkerStorage"]>[0] = {}) {
-  // Well under the 5s test timeout, so a worker that never answers fails with
-  // this package's own timeout message instead of an anonymous hung test.
-  const storage = bundle.createSharedWorkerStorage({ timeoutMs: 2_000, ...options });
+  // `timeoutMs` is well under the 5s test timeout, so a worker that never
+  // answers fails with this package's own timeout message instead of an
+  // anonymous hung test. `onError` swallows reports, so the tests that provoke
+  // a diagnostic on purpose leave a passing run clean: a warning printed by
+  // every green run is a warning nobody reads. Both are defaults, spread over
+  // by a caller that wants its own.
+  const storage = bundle.createSharedWorkerStorage({
+    timeoutMs: 2_000,
+    onError: () => {},
+    ...options,
+  });
   opened.push(storage);
   return storage;
 }
@@ -192,21 +200,36 @@ describe("a worker whose script cannot be loaded", () => {
   });
 
   it("reports nothing when the storage was disposed before the load failed", async () => {
+    const workerUrl = "/definitely-missing/cache.worker.js";
     const { reported, onError } = recorder();
-    const storage = open({
-      workerUrl: "/definitely-missing/cache.worker.js",
-      timeoutMs: 30_000,
-      onError,
-    });
+    const storage = open({ workerUrl, timeoutMs: 30_000, onError });
 
     // Disposed in the same tick the worker was constructed, as a component
     // that mounts and unmounts immediately does, and well before Chromium has
     // finished failing to fetch the script.
     storage.dispose();
 
-    // Long enough for that fetch to fail and fire the event this connection no
-    // longer listens for.
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // What has to happen before the assertions below is Chromium finishing
+    // with that script, and a second connection to it is a way to be told
+    // rather than to guess: it fails once the browser has given up on the same
+    // worker, a few milliseconds in, where a fixed sleep would have to allow
+    // half a second for a loaded machine and pass vacuously whenever it
+    // guessed short.
+    const stillListening = open({ workerUrl, timeoutMs: 30_000 });
+    const failure = await rejectionFrom(
+      () => stillListening.setItem(uniqueKey("missing"), "v"),
+      bundle.SharedWorkerStorageError,
+    );
+    expect(failure.code).toBe("transport");
+
+    // Whether a browser still dispatches a load failure to a connection whose
+    // port is already closed is its own business, and Chromium varies between
+    // runs, so this is not the place that proves a failure arriving after
+    // disposal is dropped rather than reported — that one is driven directly
+    // and asserted against a fake port, where it is deterministic. What this
+    // covers is the real thing end to end: nothing reached the reporter, and
+    // the disposed storage refuses a later write as disposed rather than as
+    // the transport failure going on behind it.
     expect(reported).toEqual([]);
     const error = await rejectionFrom(
       () => storage.setItem(uniqueKey("missing"), "v"),
