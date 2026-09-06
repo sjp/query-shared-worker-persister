@@ -139,20 +139,11 @@ export function createRequestChannel(
 
   port.onmessage = (event: MessageEvent<unknown>) => {
     const message = event.data;
-    // The worker is shared by `(scriptURL, name)`, so any same-origin script
-    // can open the same port and post to it. Only messages shaped like our
-    // responses are allowed to settle a pending request; everything else is
-    // not ours.
     if (!isStorageResponse(message)) return;
     const entry = pending.get(message.id);
-    if (!entry) return; // already timed out, or a stray message — ignore
+    if (!entry) return;
     pending.delete(message.id);
     if (entry.timer !== undefined) clearTimeout(entry.timer);
-    // The worker runs whichever build of this package the first tab to
-    // connect loaded, which need not be this one. A response written to a
-    // wire format this build doesn't speak can't be read as one, so it fails
-    // the request rather than being decoded on the chance that it fits, and
-    // names both versions so the mismatch isn't mistaken for a bad worker.
     const version = message.version ?? UNVERSIONED_PROTOCOL_VERSION;
     if (version !== PROTOCOL_VERSION) {
       entry.reject(
@@ -164,10 +155,6 @@ export function createRequestChannel(
       return;
     }
     if (message.ok) {
-      // The envelope alone doesn't say which result shape is legal - that
-      // follows from the request. Checking it against the operation we sent
-      // keeps a reply from resolving `getItem` with an array, or `entries`
-      // with a bare string, in a caller that has no reason to expect either.
       if (matchesOperation(entry.op, message.result)) entry.resolve(message.result);
       else {
         entry.reject(
@@ -189,9 +176,7 @@ export function createRequestChannel(
     const id = nextId++;
     const message = build(id);
     return new Promise<StorageResult>((resolve, reject) => {
-      // `Infinity` asks for no deadline at all, so no timer is created: the
-      // request stays pending until the port answers it or the caller settles
-      // it through `rejectAll`.
+      // `Infinity` asks for no deadline at all, so no timer is created.
       const timer =
         timeoutMs === Number.POSITIVE_INFINITY
           ? undefined
@@ -205,7 +190,7 @@ export function createRequestChannel(
               );
             }, timeoutMs);
       pending.set(id, { op: message.op, resolve, reject, timer });
-      // A port can refuse the message itself — a real `MessagePort` throws when
+      // A port can refuse the message itself, e.g. when
       // a value cannot be structured-cloned. The throw would otherwise escape
       // the executor and reject this promise while leaving the timer scheduled
       // and the entry in `pending`, so a request that never left the tab would
@@ -214,8 +199,6 @@ export function createRequestChannel(
       // a caller branching on `code` — or a read turning the failure into an
       // empty result — sees no special case.
       try {
-        // Stamped here rather than in each builder above so every request
-        // carries it, and so a builder stays free to name only its operation.
         port.postMessage({ ...message, version: PROTOCOL_VERSION });
       } catch (cause) {
         pending.delete(id);
@@ -263,9 +246,6 @@ function isStorageResponse(data: unknown): data is StorageResponse {
   if (typeof data !== "object" || data === null) return false;
   const message = data as Record<string, unknown>;
   if (message.kind !== "response" || typeof message.id !== "number") return false;
-  // A worker older than the field sends none, which is the one absence this
-  // envelope allows; anything other than a number in its place is not a version
-  // and so not one of our responses.
   if (message.version !== undefined && typeof message.version !== "number") return false;
   if (message.ok === true) return isStorageResult(message.result);
   return message.ok === false && typeof message.error === "string";

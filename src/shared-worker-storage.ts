@@ -772,22 +772,6 @@ function connectSharedWorker(
   options: CreateSharedWorkerStorageOptions,
   onFatal?: (error: SharedWorkerStorageError) => void,
 ): SharedWorkerConnection | undefined {
-  // This package builds with `vp pack` (tsdown), which ships `cache.worker.ts`
-  // as its own sibling entry (`dist/cache.worker.js`) and leaves this
-  // `new URL("./cache.worker.js", import.meta.url)` reference untouched, so at
-  // runtime it resolves relative to the published module's `import.meta.url`. The
-  // consumer's bundler does not re-emit the worker; it only has to trace and copy
-  // that sibling file into its output, keeping it same-origin. That same-origin
-  // requirement is what lets the SharedWorker actually be shared across tabs (a
-  // cross-origin copy would silently break sharing).
-  //
-  // This URL is also half of the worker's identity, the other half being `name`,
-  // so tabs share a worker only while they load the asset from the same URL. A
-  // deployment that changes it — a content hash, typically — gives new tabs a
-  // fresh, empty worker while already-open tabs keep talking to the old one.
-  //
-  // A build that can't do that tracing is what `workerUrl` is for: it names a
-  // copy the consumer hosts themselves, and the resolution below is skipped.
   const { namespace, workerUrl } = options;
   let worker: SharedWorker;
   try {
