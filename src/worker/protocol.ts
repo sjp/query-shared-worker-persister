@@ -25,7 +25,12 @@
  * The version of the wire format below that this build speaks. Every message it
  * sends carries it in {@link Versioned.version}.
  *
- * Bump it only for a change that would make one version misread the other —
+ * The worker half declares its own copy rather than importing this one, so that
+ * its bundle stays the single self-contained file consumers copy out of the
+ * package; that copy is annotated with this constant's type, so a bump here
+ * that isn't matched there fails to compile.
+ *
+ * Bump it only for a change that would make one version misread the other -
  * a field whose meaning changed, one that is now required, or a response shape
  * an older client would accept and misinterpret. Adding an operation does not
  * qualify: an older worker already answers one it doesn't know with an error,

@@ -12,6 +12,11 @@ history, so they summarise the visible behaviour rather than every change.
 
 ### Added
 
+- `PROTOCOL_VERSION`, the wire protocol version this build speaks, so a `port` implementation
+  that answers requests itself can stamp its responses with it. The client reads a response
+  carrying no version as version 1, which is what a build made before the field existed spoke,
+  so an unversioned reply works today and stops working the moment the protocol moves past 1; a
+  port that forwards to a real worker still passes the field through as it found it.
 - `experimental_createSharedWorkerQueryPersister`, a one-call setup for per-query persistence:
   it builds the shared-worker storage and wraps it in TanStack's
   `experimental_createQueryPersister`, and returns that persister with `storage`, `mode`,

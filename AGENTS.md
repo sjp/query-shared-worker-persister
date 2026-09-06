@@ -21,7 +21,8 @@ The package publishes two entries, and the split between them runs through the w
 tree. The table is in that order: the tab side first, the worker side after, and the protocol
 they meet on in between. Everything under `src/worker/` runs inside the worker process, apart
 from `src/worker/protocol.ts`, which is imported by both sides and holds nothing but the
-message shapes and their version.
+message shapes and the version they are stamped with. The worker half takes only types from
+it — see the invariant on the worker bundle below.
 
 | File                                          | Role                                                                                                                              |
 | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
@@ -54,10 +55,15 @@ User-facing behaviour — what the options mean, what consumers have to do — l
   out of the package, so anything left beside it does not travel with it. `vp pack` builds both
   entries together, and a module they both import may be emitted as a shared chunk the two of
   them load — whether it is depends on what survives tree-shaking, so it is not something a
-  rule of thumb can settle. That is why the worker side keeps its own copy of what it would
-  otherwise share with the client half — the log prefix in `src/worker/connection.ts` — instead
-  of importing it. `npm run check:package` proves it, by reading the emitted worker and failing
-  on any reference to another module; nothing has to be inspected by hand.
+  rule of thumb can settle. That is why the worker side keeps its own copy of everything it
+  would otherwise share with the client half — the log prefix and the protocol version, both in
+  `src/worker/connection.ts` — instead of importing it, and takes nothing but types from
+  `src/worker/protocol.ts`. Where a copy has to agree with the original, the annotation is what
+  holds them together: the version is declared as `typeof import("./protocol").PROTOCOL_VERSION`,
+  so bumping the one in `protocol.ts` without matching it here is a type error rather than a
+  worker that stamps the wrong version. `npm run check:package` proves the bundle is
+  self-contained, by reading the emitted worker and failing on any reference to another module;
+  nothing has to be inspected by hand.
 - **One store per worker process.** `cache.worker.ts` constructs a single `CacheStore` and every
   connection shares it; that, plus the browser terminating the worker when the last tab closes,
   is the entire lifetime model. There is no persistence to disk and no cleanup to write.

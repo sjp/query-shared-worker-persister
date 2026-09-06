@@ -1,5 +1,5 @@
 import { describeValue } from "./describe-value";
-import { PROTOCOL_VERSION, type StorageRequest, type StorageResponse } from "./protocol";
+import type { StorageRequest, StorageResponse } from "./protocol";
 import type { CacheStore } from "./store";
 
 /**
@@ -26,6 +26,16 @@ export interface WorkerPort {
  * bundler copies out of the package.
  */
 const PACKAGE_NAME = "@sjpnz/query-shared-worker-persister";
+
+/**
+ * The wire version this build stamps its responses with, spelled out here for
+ * the same reason as {@link PACKAGE_NAME}: the client half reads the one in
+ * `./protocol` and the package re-exports it, so importing that value here would
+ * make the module a chunk both entries load. The annotation is the link between
+ * the two copies - it is the type of the constant over there, which is the
+ * literal number, so a bump that isn't matched here fails to compile.
+ */
+const PROTOCOL_VERSION: typeof import("./protocol").PROTOCOL_VERSION = 1;
 
 /** The operations a request may name; used to reject anything else up front. */
 const OPERATIONS = new Set<StorageRequest["op"]>(["getItem", "setItem", "removeItem", "entries"]);

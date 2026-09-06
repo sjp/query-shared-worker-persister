@@ -507,6 +507,7 @@ import {
   createSharedWorkerPersister,
   createSharedWorkerStorage,
   type PortAdapter,
+  PROTOCOL_VERSION,
   type StorageRequest,
   type StorageResponse,
 } from "@sjpnz/query-shared-worker-persister";
@@ -514,7 +515,13 @@ import {
 const port: PortAdapter = {
   onmessage: null,
   postMessage(request: StorageRequest) {
-    const response: StorageResponse = { kind: "response", id: request.id, ok: true, result: null };
+    const response: StorageResponse = {
+      kind: "response",
+      id: request.id,
+      ok: true,
+      result: null,
+      version: PROTOCOL_VERSION,
+    };
     port.onmessage?.({ data: response } as MessageEvent<StorageResponse>);
   },
 };
@@ -523,7 +530,7 @@ const storage = createSharedWorkerStorage({ port });
 const persister = createSharedWorkerPersister({ port });
 ```
 
-Every request carries an `id` and is answered by the response with the same `id`, so replies may arrive in any order; a request never answered is left to `timeoutMs`. Anything that isn't a well-formed `StorageResponse` is ignored, since a real shared worker's port is reachable by any same-origin script. `dispose()` calls `close()` on the port when it has one. A port may also set `onclose`, which the storage assigns to be told that the transport is gone for good — a real `MessagePort` fires it when the worker behind it goes away — and every request from then on fails as a `transport` error rather than waiting out its timeout; a port that never calls it behaves exactly as before. Requests also carry the wire protocol's own `version`, and a response may echo it or leave it out, as the one above does — an omitted version is read as `1`. A response naming a version this build doesn't speak fails its request rather than being decoded, so a port that forwards to a real worker should pass the field through as it found it rather than write one of its own.
+Every request carries an `id` and is answered by the response with the same `id`, so replies may arrive in any order; a request never answered is left to `timeoutMs`. Anything that isn't a well-formed `StorageResponse` is ignored, since a real shared worker's port is reachable by any same-origin script. `dispose()` calls `close()` on the port when it has one. A port may also set `onclose`, which the storage assigns to be told that the transport is gone for good — a real `MessagePort` fires it when the worker behind it goes away — and every request from then on fails as a `transport` error rather than waiting out its timeout; a port that never calls it behaves exactly as before. Requests also carry the wire protocol's own `version`, and so should responses. A port that answers on its own, as the one above does, stamps the exported `PROTOCOL_VERSION` — the version of the wire format it was built against. A port that forwards to a real worker passes the field through as it found it instead, since the version belongs to whichever build actually answered. A response with no version at all is read as `1`, which is what a build made before the field existed spoke; that keeps an old worker readable, but it is not a shape to write on purpose, because it becomes wrong the moment the protocol moves past `1`. A response naming a version this build doesn't speak fails its request rather than being decoded.
 
 This is mainly how the package's own tests drive the storage without a browser, and it is the seam to reach for when testing an application that persists through this package. It is not a plugin point for a different backing store: the worker's semantics — one store shared by every connected tab, last write wins — are what the rest of this document describes.
 
@@ -545,6 +552,7 @@ This is mainly how the package's own tests drive the storage without a browser, 
 | `PortAdapter`                             | The port shape `port` accepts: the slice of `MessagePort` this package uses.                         |
 | `StorageRequest`, `StorageResponse`       | The messages exchanged over the port, for anyone implementing a `port` or inspecting worker traffic. |
 | `StorageResult`, `StorageEntries`         | The payload shapes those messages carry.                                                             |
+| `PROTOCOL_VERSION`                        | A number, not a type: the wire protocol version a port answering on its own stamps its replies with. |
 
 ## How sharing works
 
