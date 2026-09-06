@@ -83,41 +83,67 @@ export function createDeadPort(): PortAdapter {
 }
 
 /**
+ * A port that shows every request to `onPost` and then hands it to `answering`,
+ * so one fake can serve both the tests that assert on what the client sent and
+ * those that need genuine replies. Pass no `answering` port for a fake that
+ * observes and never answers. Anything in `extra` — a `close` spy, say — is
+ * merged onto the returned port.
+ */
+function createForwardingPort(
+  answering: PortAdapter | undefined,
+  onPost: (request: StorageRequest) => void,
+  extra?: Partial<PortAdapter>,
+): PortAdapter {
+  const port: PortAdapter = {
+    onmessage: null,
+    postMessage: (request) => {
+      onPost(request);
+      answering?.postMessage(request);
+    },
+    ...extra,
+  };
+  // The answering port replies through its own handler, so point that at
+  // whichever handler the client has installed on the port it was given.
+  if (answering) answering.onmessage = (event) => port.onmessage?.(event);
+  return port;
+}
+
+/**
  * A {@link createFakePort} that also keeps every request posted through it, for
  * the tests that assert on what the client asked as well as on what it got back.
  */
 export function createRecordingPort(store = new CacheStore()) {
-  const answering = createFakePort(store);
   const sent: StorageRequest[] = [];
-  const port: PortAdapter = {
-    onmessage: null,
-    postMessage: (request) => {
-      sent.push(request);
-      answering.postMessage(request);
-    },
-  };
-  // The answering port replies through its own handler, so point that at
-  // whichever handler the client has installed on the port it was given.
-  answering.onmessage = (event) => port.onmessage?.(event);
+  const port = createForwardingPort(createFakePort(store), (request) => void sent.push(request));
   return { port, sent, store };
+}
+
+/**
+ * Run `fn` with `globalThis[name]` forced to `value` — or deleted, when that is
+ * `undefined` — restore whatever was there before, and hand back whatever `fn`
+ * returned. Restoring tells an absent global from one set to `undefined`, so a
+ * test that deletes one leaves no trace of it behind.
+ */
+async function withGlobal<T>(name: string, value: unknown, fn: () => T | Promise<T>): Promise<T> {
+  const g = globalThis as unknown as Record<string, unknown>;
+  const had = name in g;
+  const original = g[name];
+  if (value === undefined) delete g[name];
+  else g[name] = value;
+  try {
+    return await fn();
+  } finally {
+    if (had) g[name] = original;
+    else delete g[name];
+  }
 }
 
 /**
  * Run `fn` with `globalThis.SharedWorker` forced present/absent, then restore,
  * handing back whatever `fn` returned.
  */
-export async function withSharedWorker<T>(value: unknown, fn: () => T | Promise<T>): Promise<T> {
-  const g = globalThis as { SharedWorker?: unknown };
-  const had = "SharedWorker" in g;
-  const original = g.SharedWorker;
-  if (value === undefined) delete g.SharedWorker;
-  else g.SharedWorker = value;
-  try {
-    return await fn();
-  } finally {
-    if (had) g.SharedWorker = original;
-    else delete g.SharedWorker;
-  }
+export function withSharedWorker<T>(value: unknown, fn: () => T | Promise<T>): Promise<T> {
+  return withGlobal("SharedWorker", value, fn);
 }
 
 /**
@@ -129,18 +155,8 @@ export async function withSharedWorker<T>(value: unknown, fn: () => T | Promise<
  * missing `SharedWorker`, which is the environment the no-op fallback is meant
  * to be visible in.
  */
-export async function withDocument<T>(value: unknown, fn: () => T | Promise<T>): Promise<T> {
-  const g = globalThis as { document?: unknown };
-  const had = "document" in g;
-  const original = g.document;
-  if (value === undefined) delete g.document;
-  else g.document = value;
-  try {
-    return await fn();
-  } finally {
-    if (had) g.document = original;
-    else delete g.document;
-  }
+export function withDocument<T>(value: unknown, fn: () => T | Promise<T>): Promise<T> {
+  return withGlobal("document", value, fn);
 }
 
 /**
@@ -151,18 +167,8 @@ export async function withDocument<T>(value: unknown, fn: () => T | Promise<T>):
  * server: there is no page origin to hold a `workerUrl` against. Wrap a test in
  * this — `withLocation({ href: "https://app.test/" }, ...)` — to give it one.
  */
-export async function withLocation<T>(value: unknown, fn: () => T | Promise<T>): Promise<T> {
-  const g = globalThis as { location?: unknown };
-  const had = "location" in g;
-  const original = g.location;
-  if (value === undefined) delete g.location;
-  else g.location = value;
-  try {
-    return await fn();
-  } finally {
-    if (had) g.location = original;
-    else delete g.location;
-  }
+export function withLocation<T>(value: unknown, fn: () => T | Promise<T>): Promise<T> {
+  return withGlobal("location", value, fn);
 }
 
 /** One `new SharedWorker(...)` call, as seen by {@link fakeSharedWorker}. */
@@ -199,25 +205,9 @@ export function fakeSharedWorker({
   const constructions: SharedWorkerConstruction[] = [];
   const instances: FakeSharedWorker[] = [];
 
-  /**
-   * A port that both spies on what was posted and forwards it to a real
-   * answering port, so a single fake serves the tests that assert on traffic and
-   * those that need genuine responses.
-   */
+  /** The fake's port: spies on what was posted, and answers unless `dead`. */
   function createSpiedPort(post: (request: StorageRequest) => void, close: () => void) {
-    const answering = dead ? undefined : createFakePort(store);
-    const port: PortAdapter = {
-      onmessage: null,
-      postMessage: (request) => {
-        post(request);
-        answering?.postMessage(request);
-      },
-      close,
-    };
-    // The answering port replies through its own handler, so point that at
-    // whichever handler the client has installed on the port it was given.
-    if (answering) answering.onmessage = (event) => port.onmessage?.(event);
-    return port;
+    return createForwardingPort(dead ? undefined : createFakePort(store), post, { close });
   }
 
   class FakeSharedWorker {
