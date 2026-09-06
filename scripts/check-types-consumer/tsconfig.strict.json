@@ -1,0 +1,14 @@
+// The same consumer, compiled again under the two strictness options an app is
+// most likely to turn on beyond `strict`. They change what the declarations
+// mean rather than just how much is checked: `exactOptionalPropertyTypes` makes
+// an optional property that doesn't say `| undefined` reject a value that is
+// `undefined`, which is exactly what an options object built conditionally
+// passes. The looser configuration next to this one cannot see that difference,
+// so both are run.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true
+  }
+}

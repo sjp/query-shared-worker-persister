@@ -123,15 +123,26 @@ resolution complaints are reported but do not fail the run. CI runs this after `
 stand-in consumer that imports `dist/` under the narrow `lib` a typical app has and with
 `skipLibCheck: false`. It is what proves the `esnext.disposable` reference `vp pack` banners
 onto the declarations is doing its job: drop the banner and this fails, while everything else
-still passes. Because it reads `dist/`, it only means anything after `build`, which is where
-CI runs it.
+still passes. It also uses every named export of `src/index.ts` at least once, in the way the
+README shows, so an export renamed or dropped from the public surface fails here. Because it
+reads `dist/`, it only means anything after `build`, which is where CI runs it.
 
-That import is also why `lint.ignorePatterns` in `vite.config.ts` keeps
+The script compiles that one file twice, under the two configs beside it. `tsconfig.json` is an
+ordinary app's; `tsconfig.strict.json` extends it and adds `exactOptionalPropertyTypes` and
+`noUncheckedIndexedAccess`, the two options that change what the shipped declarations _mean_
+rather than how much of the file is checked. The source builds with both on, so the surface has
+to keep working for a consumer who has them on as well: every option is declared
+`| undefined` rather than merely optional, and the consumer file passes them the way an
+application assembles them — `{ namespace: configured ? "consumer" : undefined }` — so an
+option that loses that union fails the strict pass while the loose one still goes green. Add a
+new export or option and use it there too; nothing else checks the declarations from outside.
+
+Those imports of `dist/` are also why `lint.ignorePatterns` in `vite.config.ts` keeps
 `scripts/check-types-consumer` out of `vp check`. `vp check` type checks each file under its
 nearest `tsconfig.json`, so it would otherwise check this one too — before `build` has run, in
 CI and on a fresh clone alike, and fail on a `dist/` that is not there yet. Formatting still
-covers the directory, because `fmt` reads no types. The file is checked once, by its own
-script, at the point in the run where `dist/` exists.
+covers the directory, because `fmt` reads no types. The file is checked by its own script, at
+the point in the run where `dist/` exists.
 
 ## Node versions
 
