@@ -12,6 +12,15 @@ history, so they summarise the visible behaviour rather than every change.
 
 ### Added
 
+- `experimental_createSharedWorkerQueryPersister`, a one-call setup for per-query persistence:
+  it builds the shared-worker storage and wraps it in TanStack's
+  `experimental_createQueryPersister`, and returns that persister with `storage`, `mode`,
+  `dispose()` and `[Symbol.dispose]()` attached. It derives the storage's `entriesPrefix` from
+  the persister's `prefix` — that prefix plus the `-` TanStack joins keys with, defaulting with
+  it — so the two can no longer drift apart, which they did silently: a filter matching nothing
+  is a valid listing, so `restoreQueries` restored nothing and `persisterGc` collected nothing
+  without an error anywhere. It carries the same `experimental_` prefix as the TanStack function
+  it wraps, whose shape may change in a minor release.
 - `entries()` on `SharedWorkerStorage`, returning every key/value pair in the shared store, so
   the storage can drive TanStack's per-query persister (`experimental_createQueryPersister`).
 - `entriesPrefix` on `createSharedWorkerStorage`, which narrows `entries()` to the keys starting

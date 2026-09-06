@@ -23,17 +23,18 @@ they meet on in between. Everything under `src/worker/` runs inside the worker p
 from `src/worker/protocol.ts`, which is imported by both sides and holds nothing but the
 message shapes and their version.
 
-| File                                    | Role                                                                                                                              |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `src/index.ts`                          | The public surface. Every export is named individually, so widening it is a deliberate edit.                                      |
-| `src/create-shared-worker-persister.ts` | One-call wrapper: builds the storage and hands it to TanStack's async-storage persister.                                          |
-| `src/shared-worker-storage.ts`          | The client half. Constructs the worker, correlates requests to responses by `id`, owns timeouts, disposal and the no-op fallback. |
-| `src/worker/protocol.ts`                | The wire contract both halves import: the message shapes, and the version they are stamped with.                                  |
-| `src/worker/cache.worker.ts`            | The worker entry. Holds the one `CacheStore` and hands each connecting port to `handleConnect`.                                   |
-| `src/worker/connection.ts`              | Validates incoming messages and answers them on a port. Transport-shaped but free of worker globals.                              |
-| `src/worker/store.ts`                   | The cache: a `Map<string, string>` and the operations over it. No transport, no globals.                                          |
-| `src/worker/describe-value.ts`          | Names an arbitrary value for a message or log without throwing on one JSON can't take.                                            |
-| `src/test-utils.ts`                     | Fakes shared by the test suites. Not a packaged entry.                                                                            |
+| File                                          | Role                                                                                                                              |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `src/index.ts`                                | The public surface. Every export is named individually, so widening it is a deliberate edit.                                      |
+| `src/create-shared-worker-persister.ts`       | One-call wrapper: builds the storage and hands it to TanStack's async-storage persister.                                          |
+| `src/create-shared-worker-query-persister.ts` | The same for TanStack's per-query persister, deriving the storage's `entriesPrefix` from its `prefix`.                            |
+| `src/shared-worker-storage.ts`                | The client half. Constructs the worker, correlates requests to responses by `id`, owns timeouts, disposal and the no-op fallback. |
+| `src/worker/protocol.ts`                      | The wire contract both halves import: the message shapes, and the version they are stamped with.                                  |
+| `src/worker/cache.worker.ts`                  | The worker entry. Holds the one `CacheStore` and hands each connecting port to `handleConnect`.                                   |
+| `src/worker/connection.ts`                    | Validates incoming messages and answers them on a port. Transport-shaped but free of worker globals.                              |
+| `src/worker/store.ts`                         | The cache: a `Map<string, string>` and the operations over it. No transport, no globals.                                          |
+| `src/worker/describe-value.ts`                | Names an arbitrary value for a message or log without throwing on one JSON can't take.                                            |
+| `src/test-utils.ts`                           | Fakes shared by the test suites. Not a packaged entry.                                                                            |
 
 User-facing behaviour — what the options mean, what consumers have to do — lives in
 `README.md`; this file covers only what you need to change the code.

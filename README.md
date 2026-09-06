@@ -33,7 +33,7 @@ The source for the react application is available on [GitHub](https://github.com
 - [Security considerations](#security-considerations)
 - [Guides](#guides)
   - [Other frameworks](#other-frameworks)
-  - [Per-query persistence](#per-query-persistence)
+  - [Per-query persistence](#per-query-persistence) · [What the wrapper does with `prefix`](#what-the-wrapper-does-with-prefix)
   - [Bundler requirements](#bundler-requirements) · [Hosting the worker yourself](#hosting-the-worker-yourself)
   - [Browser support](#browser-support) · [Server-side rendering](#server-side-rendering)
   - [Disposal](#disposal)
@@ -41,6 +41,7 @@ The source for the react application is available on [GitHub](https://github.com
   - [Diagnostics](#diagnostics)
 - [API](#api)
   - [`createSharedWorkerPersister(options?)`](#createsharedworkerpersisteroptions)
+  - [`experimental_createSharedWorkerQueryPersister(options?)`](#experimental_createsharedworkerquerypersisteroptions)
   - [`createSharedWorkerStorage(options?)`](#createsharedworkerstorageoptions) · [Supplying your own port](#supplying-your-own-port)
   - [`isSharedWorkerSupported()`](#issharedworkersupported)
   - [Types](#types)
@@ -203,21 +204,14 @@ unsubscribe();
 
 By default the persister serialises the whole dehydrated cache under a single key, so the last tab to write wins and everything another tab had cached is replaced (see [How sharing works](#how-sharing-works)). TanStack's experimental per-query persister avoids that by storing one key per query hash, which suits a shared store much better: two tabs caching different queries add to the same store instead of overwriting each other.
 
-Pass the storage (not the persister) to `experimental_createQueryPersister`:
+Set it up with `experimental_createSharedWorkerQueryPersister`, in place of `createSharedWorkerPersister`:
 
 ```typescript
 // query-client.ts
 import { QueryClient } from "@tanstack/react-query";
-import { experimental_createQueryPersister } from "@tanstack/query-persist-client-core";
-import { createSharedWorkerStorage } from "@sjpnz/query-shared-worker-persister";
+import { experimental_createSharedWorkerQueryPersister } from "@sjpnz/query-shared-worker-persister";
 
-const storage = createSharedWorkerStorage({
-  // Have the worker send back only this app's entries; see below.
-  entriesPrefix: "MY_AWESOME_APP-",
-});
-
-export const queryPersister = experimental_createQueryPersister({
-  storage,
+export const queryPersister = experimental_createSharedWorkerQueryPersister({
   // Every key this persister writes starts with `prefix`; give each app its own
   // so apps sharing a worker don't restore each other's queries.
   prefix: "MY_AWESOME_APP",
@@ -229,15 +223,27 @@ export const queryClient = new QueryClient({
 });
 ```
 
-`entriesPrefix` is worth pairing with `prefix` here, and this is the only place it matters. The per-query persister reads the entire store — on `restoreQueries`, on every garbage-collection pass and on `removeQueries` — and then keeps only the keys under its own `prefix`, which it joins to each query hash with a `-`. One worker's store holds every tab's entries, and every entry of any other app sharing that worker, so without `entriesPrefix` each of those reads copies all of it across the port to throw most of it away. Set it to the persister's `prefix` plus that `-` and the worker sends back only the matching pairs. It narrows what is transferred, not what is reachable: `getItem` and `setItem` still address the whole store, and any same-origin script can read all of it regardless (see [Security considerations](#security-considerations)).
-
 `persisterFn` only restores a query when that query is actually used, so it fills the cache lazily. To have the shared cache present from the first render — the point of sharing it across tabs — restore everything up front and await it before rendering:
 
 ```typescript
 await queryPersister.restoreQueries(queryClient);
 ```
 
-Use this _instead of_ `PersistQueryClientProvider` and `createSharedWorkerPersister`, not alongside them; running both persists the same data twice under different keys. Note that this API is marked experimental by TanStack and its shape may change in a minor release.
+Use this _instead of_ `PersistQueryClientProvider` and `createSharedWorkerPersister`, not alongside them; running both persists the same data twice under different keys. Note that the API it wraps is marked experimental by TanStack and its shape may change in a minor release, which is why this one carries the same prefix on its name.
+
+#### What the wrapper does with `prefix`
+
+The per-query persister reads the entire store — on `restoreQueries`, on every garbage-collection pass and on `removeQueries` — and then keeps only the keys under its own `prefix`, which it joins to each query hash with a `-`. One worker's store holds every tab's entries, and every entry of any other app sharing that worker, so reading all of it copies the lot across the port to throw most of it away. So the wrapper builds its storage with `entriesPrefix` set to `prefix` followed by that `-` — `"MY_AWESOME_APP-"` above, `"tanstack-query-"` when you leave `prefix` alone — and the worker sends back only the matching pairs. This narrows what is transferred, not what is reachable: `getItem` and `setItem` on the storage still address the whole store, and any same-origin script can read all of it regardless (see [Security considerations](#security-considerations)).
+
+The two halves can still be assembled by hand, with `createSharedWorkerStorage` and TanStack's `experimental_createQueryPersister`, when you want a filter that isn't the persister's prefix — or none at all. Then the derivation above is yours to keep in step: `entriesPrefix` has to be the persister's `prefix` plus a `-`, and a mismatch is silent, because a listing that matches nothing is a valid answer and leaves `restoreQueries` restoring nothing.
+
+```typescript
+import { experimental_createQueryPersister } from "@tanstack/query-persist-client-core";
+import { createSharedWorkerStorage } from "@sjpnz/query-shared-worker-persister";
+
+const storage = createSharedWorkerStorage({ entriesPrefix: "MY_AWESOME_APP-" });
+const queryPersister = experimental_createQueryPersister({ storage, prefix: "MY_AWESOME_APP" });
+```
 
 ### Bundler requirements
 
@@ -403,7 +409,7 @@ if (persister.mode === "noop") {
 
 ## API
 
-Two entry points: `createSharedWorkerPersister` for the usual whole-cache setup, and `createSharedWorkerStorage` for the storage on its own — the lower-level building block, and what [per-query persistence](#per-query-persistence) needs.
+Three entry points: `createSharedWorkerPersister` for the usual whole-cache setup, `experimental_createSharedWorkerQueryPersister` for [per-query persistence](#per-query-persistence), and `createSharedWorkerStorage` for the storage on its own — the building block underneath both.
 
 ### `createSharedWorkerPersister(options?)`
 
@@ -432,6 +438,37 @@ Beyond the `Persister` methods, the returned object carries the storage's teardo
 | `dispose()`          | `void`                      | Disposes the storage this persister created: settles in-flight requests, closes the port. Idempotent; see [Disposal](#disposal). |
 | `[Symbol.dispose]()` | `void`                      | The same call under the well-known symbol, so the persister can be declared with `using`.                                        |
 | `mode`               | `"shared-worker" \| "noop"` | Whether a transport was established at all. `"noop"` means nothing is persisted; see [Diagnostics](#diagnostics).                |
+
+### `experimental_createSharedWorkerQueryPersister(options?)`
+
+Builds a SharedWorker-backed storage and wraps it in TanStack's [`experimental_createQueryPersister`](https://tanstack.com/query/latest/docs/framework/react/plugins/createPersister), which stores one key per query hash rather than the whole cache under one; see [Per-query persistence](#per-query-persistence). Returns everything that function returns — `persisterFn`, `persistQuery`, `restoreQueries`, `persisterGc`, `removeQueries` and the rest — with the storage attached.
+
+Every `experimental_createQueryPersister` option except `storage` is forwarded untouched, alongside the options this package adds:
+
+| Option             | Type                                                            | Default            | Purpose                                                                                                                                                                                                                |
+| ------------------ | --------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prefix`           | `string`                                                        | `"tanstack-query"` | Starts every key this persister writes, joined to the query hash with a `-`. Give each application its own. The storage's listing is narrowed to exactly this; `entriesPrefix` is derived and not accepted here.       |
+| `maxAge`           | `number`                                                        | `86400000`         | Discard a persisted query older than this on restore.                                                                                                                                                                  |
+| `buster`           | `string`                                                        | `""`               | Change it to invalidate everything persisted under the old value.                                                                                                                                                      |
+| `serialize`        | `(query: PersistedQuery) => string \| Promise<string>`          | `JSON.stringify`   | Also the place to strip queries you don't want in a store any same-origin script can read; see [Security considerations](#security-considerations).                                                                    |
+| `deserialize`      | `(cached: string) => PersistedQuery \| Promise<PersistedQuery>` | `JSON.parse`       | Inverse of `serialize`.                                                                                                                                                                                                |
+| `filters`          | `QueryFilters`                                                  | —                  | Narrow which queries are persisted at all.                                                                                                                                                                             |
+| `refetchOnRestore` | `boolean \| "always"`                                           | `true`             | Whether a restored query that is stale refetches.                                                                                                                                                                      |
+| `namespace`        | `string`                                                        | —                  | Give this app a worker, and therefore a store, of its own. Must not be empty; `""` throws a `TypeError`. See [Which tabs share a worker](#which-tabs-share-a-worker).                                                  |
+| `timeoutMs`        | `number`                                                        | `10000`            | How long a read or write waits for the worker before giving up. Greater than `0` and at most `2147483647`, or `Infinity` for no timeout; anything else throws a `RangeError`. See [Request timeout](#request-timeout). |
+| `workerUrl`        | `string \| URL`                                                 | —                  | Load the worker from a copy you host, for builds that can't emit the packaged asset. Must be on the page's own origin; anything else throws a `TypeError`. See [Bundler requirements](#bundler-requirements).          |
+| `signal`           | `AbortSignal`                                                   | —                  | Disposes the underlying storage when aborted.                                                                                                                                                                          |
+| `port`             | `PortAdapter`                                                   | —                  | Carry the protocol over a port you supply instead of constructing a worker; see [Supplying your own port](#supplying-your-own-port).                                                                                   |
+| `onError`          | `(error: SharedWorkerStorageError) => void`                     | console            | Receives the storage's warnings and errors instead of the console; see [Diagnostics](#diagnostics).                                                                                                                    |
+
+Beyond TanStack's methods, the returned object carries the storage itself, its teardown and its mode:
+
+| Member               | Type                        | Notes                                                                                                                       |
+| -------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `storage`            | `SharedWorkerStorage`       | The storage this persister was built on, for calls the persister doesn't make for you; its `entries()` is already narrowed. |
+| `dispose()`          | `void`                      | Disposes that storage: settles in-flight requests, closes the port. Idempotent; see [Disposal](#disposal).                  |
+| `[Symbol.dispose]()` | `void`                      | The same call under the well-known symbol, so the persister can be declared with `using`.                                   |
+| `mode`               | `"shared-worker" \| "noop"` | Whether a transport was established at all. `"noop"` means nothing is persisted; see [Diagnostics](#diagnostics).           |
 
 ### `createSharedWorkerStorage(options?)`
 
@@ -496,16 +533,18 @@ This is mainly how the package's own tests drive the storage without a browser, 
 
 ### Types
 
-| Type                                 | What it is                                                                                           |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| `CreateSharedWorkerPersisterOptions` | The options object above.                                                                            |
-| `CreateSharedWorkerStorageOptions`   | The storage options object above.                                                                    |
-| `SharedWorkerStorage`                | The storage returned by `createSharedWorkerStorage`.                                                 |
-| `SharedWorkerStorageError`           | The error every failure is raised and reported as; a class, so `instanceof` works.                   |
-| `SharedWorkerStorageErrorCode`       | The `code` it carries; see [Diagnostics](#diagnostics).                                              |
-| `PortAdapter`                        | The port shape `port` accepts: the slice of `MessagePort` this package uses.                         |
-| `StorageRequest`, `StorageResponse`  | The messages exchanged over the port, for anyone implementing a `port` or inspecting worker traffic. |
-| `StorageResult`, `StorageEntries`    | The payload shapes those messages carry.                                                             |
+| Type                                      | What it is                                                                                           |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `CreateSharedWorkerPersisterOptions`      | The options object above.                                                                            |
+| `CreateSharedWorkerQueryPersisterOptions` | The per-query persister's options object above.                                                      |
+| `CreateSharedWorkerStorageOptions`        | The storage options object above.                                                                    |
+| `SharedWorkerQueryPersister`              | What `experimental_createSharedWorkerQueryPersister` returns.                                        |
+| `SharedWorkerStorage`                     | The storage returned by `createSharedWorkerStorage`.                                                 |
+| `SharedWorkerStorageError`                | The error every failure is raised and reported as; a class, so `instanceof` works.                   |
+| `SharedWorkerStorageErrorCode`            | The `code` it carries; see [Diagnostics](#diagnostics).                                              |
+| `PortAdapter`                             | The port shape `port` accepts: the slice of `MessagePort` this package uses.                         |
+| `StorageRequest`, `StorageResponse`       | The messages exchanged over the port, for anyone implementing a `port` or inspecting worker traffic. |
+| `StorageResult`, `StorageEntries`         | The payload shapes those messages carry.                                                             |
 
 ## How sharing works
 

@@ -4,6 +4,11 @@ export {
   type SharedWorkerPersister,
 } from "./create-shared-worker-persister";
 export {
+  type CreateSharedWorkerQueryPersisterOptions,
+  experimental_createSharedWorkerQueryPersister,
+  type SharedWorkerQueryPersister,
+} from "./create-shared-worker-query-persister";
+export {
   type CreateSharedWorkerStorageOptions,
   createSharedWorkerStorage,
   isSharedWorkerSupported,
