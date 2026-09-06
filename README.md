@@ -51,11 +51,11 @@ The source for the react application is available on [GitHub](https://github.com
 
 ## Getting started
 
-This walkthrough goes from an empty project to two tabs sharing one query cache. Each step builds on the one before it, and the code is React; only [step 4](#4-render-the-app-behind-the-provider) differs elsewhere, and [Other frameworks](#other-frameworks) covers what to do instead.
+This walkthrough goes from a React application already using TanStack Query to two tabs sharing one query cache. Each step builds on the one before it, and the code is React; only [step 4](#4-render-the-app-behind-the-provider) differs elsewhere, and [Other frameworks](#other-frameworks) covers what to do instead.
 
 ### 1. Install the packages
 
-Install this package alongside TanStack Query's persistence packages for React:
+`react` and `@tanstack/react-query` are assumed to be installed already. Install this package alongside TanStack Query's persistence packages for React:
 
 ```shell
 npm install @sjpnz/query-shared-worker-persister @tanstack/react-query-persist-client @tanstack/query-async-storage-persister
@@ -63,7 +63,7 @@ npm install @sjpnz/query-shared-worker-persister @tanstack/react-query-persist-c
 
 TanStack Query 5.80.5 or newer is required. That is the first release whose persistence packages carry the per-query persister API this package's `entries()` is written for, including `restoreQueries`.
 
-`@tanstack/query-async-storage-persister` and `@tanstack/query-persist-client-core` are peer dependencies: this package's public types are expressed in terms of them, so your project supplies the single copy that has to match your TanStack Query version. `@tanstack/react-query-persist-client` already brings in `@tanstack/query-persist-client-core`, and npm installs missing peers automatically, so the command above is usually all that is needed.
+`@tanstack/query-async-storage-persister` and `@tanstack/query-persist-client-core` are peer dependencies: this package's public types are expressed in terms of them, so your project supplies the single copy that has to match your TanStack Query version. `@tanstack/react-query-persist-client` already brings in `@tanstack/query-persist-client-core`, and npm installs missing peers automatically, so the command above is usually all that is needed. On pnpm or Yarn Classic, which leave peers to you, add `@tanstack/query-persist-client-core` to it.
 
 ### 2. Create the query client and the persister
 
@@ -413,7 +413,7 @@ Three entry points: `createSharedWorkerPersister` for the usual whole-cache setu
 
 ### `createSharedWorkerPersister(options?)`
 
-Builds a SharedWorker-backed storage and wraps it in TanStack's [`createAsyncStoragePersister`](https://tanstack.com/query/latest/docs/framework/react/plugins/createAsyncStoragePersister). Returns a `Persister` to pass as `persistOptions.persister`.
+Builds a SharedWorker-backed storage and wraps it in TanStack's [`createAsyncStoragePersister`](https://tanstack.com/query/latest/docs/framework/react/plugins/createAsyncStoragePersister). Returns a `SharedWorkerPersister`: a TanStack `Persister` to pass as `persistOptions.persister`, with the storage's teardown and mode on it.
 
 Every `createAsyncStoragePersister` option except `storage` is forwarded untouched, alongside the options this package adds:
 
@@ -480,7 +480,7 @@ Returns a `SharedWorkerStorage`: an `AsyncStorage` the shared worker backs, usab
 | `namespace`     | `string`                                    | —       | Appended to the worker's name, so apps shipping the same worker asset get a worker each. Must not be empty; `""` throws a `TypeError`.                                                                            |
 | `entriesPrefix` | `string`                                    | —       | Return only the entries whose key starts with this from `entries()`, instead of the whole shared store; see [Per-query persistence](#per-query-persistence).                                                      |
 | `workerUrl`     | `string \| URL`                             | —       | The worker's script URL, replacing the packaged `cache.worker.js`. Must be on the page's own origin; anything else throws a `TypeError`. See [Bundler requirements](#bundler-requirements).                       |
-| `signal`        | `AbortSignal`                               | —       | Calls `dispose()` when aborted; a signal that has already aborted skips construction entirely and yields a disposed storage.                                                                                      |
+| `signal`        | `AbortSignal`                               | —       | Disposes the storage when aborted; a signal that has already aborted skips construction entirely and yields a disposed storage.                                                                                   |
 | `port`          | `PortAdapter`                               | —       | Carry the protocol over a port you supply instead of constructing a worker; see [Supplying your own port](#supplying-your-own-port).                                                                              |
 | `onError`       | `(error: SharedWorkerStorageError) => void` | console | Receives every warning and error instead of the console; see [Diagnostics](#diagnostics).                                                                                                                         |
 
@@ -540,19 +540,20 @@ This is mainly how the package's own tests drive the storage without a browser, 
 
 ### Types
 
-| Type                                      | What it is                                                                                           |
-| ----------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `CreateSharedWorkerPersisterOptions`      | The options object above.                                                                            |
-| `CreateSharedWorkerQueryPersisterOptions` | The per-query persister's options object above.                                                      |
-| `CreateSharedWorkerStorageOptions`        | The storage options object above.                                                                    |
-| `SharedWorkerQueryPersister`              | What `experimental_createSharedWorkerQueryPersister` returns.                                        |
-| `SharedWorkerStorage`                     | The storage returned by `createSharedWorkerStorage`.                                                 |
-| `SharedWorkerStorageError`                | The error every failure is raised and reported as; a class, so `instanceof` works.                   |
-| `SharedWorkerStorageErrorCode`            | The `code` it carries; see [Diagnostics](#diagnostics).                                              |
-| `PortAdapter`                             | The port shape `port` accepts: the slice of `MessagePort` this package uses.                         |
-| `StorageRequest`, `StorageResponse`       | The messages exchanged over the port, for anyone implementing a `port` or inspecting worker traffic. |
-| `StorageResult`, `StorageEntries`         | The payload shapes those messages carry.                                                             |
-| `PROTOCOL_VERSION`                        | A number, not a type: the wire protocol version a port answering on its own stamps its replies with. |
+| Type                                      | What it is                                                                                                                                                                    |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CreateSharedWorkerPersisterOptions`      | The options object above.                                                                                                                                                     |
+| `CreateSharedWorkerQueryPersisterOptions` | The per-query persister's options object above.                                                                                                                               |
+| `CreateSharedWorkerStorageOptions`        | The storage options object above.                                                                                                                                             |
+| `SharedWorkerPersister`                   | The persister returned by [`createSharedWorkerPersister`](#createsharedworkerpersisteroptions); a TanStack `Persister` carrying `dispose()`, `[Symbol.dispose]()` and `mode`. |
+| `SharedWorkerQueryPersister`              | What `experimental_createSharedWorkerQueryPersister` returns.                                                                                                                 |
+| `SharedWorkerStorage`                     | The storage returned by `createSharedWorkerStorage`.                                                                                                                          |
+| `SharedWorkerStorageError`                | The error every failure is raised and reported as; a class, so `instanceof` works.                                                                                            |
+| `SharedWorkerStorageErrorCode`            | The `code` it carries; see [Diagnostics](#diagnostics).                                                                                                                       |
+| `PortAdapter`                             | The port shape `port` accepts: the slice of `MessagePort` this package uses.                                                                                                  |
+| `StorageRequest`, `StorageResponse`       | The messages exchanged over the port, for anyone implementing a `port` or inspecting worker traffic.                                                                          |
+| `StorageResult`, `StorageEntries`         | The payload shapes those messages carry.                                                                                                                                      |
+| `PROTOCOL_VERSION`                        | A number, not a type: the wire protocol version a port answering on its own stamps its replies with.                                                                          |
 
 ## How sharing works
 
