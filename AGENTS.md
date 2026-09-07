@@ -245,9 +245,10 @@ override by hand, then run `vp install` (not `--frozen-lockfile`) and commit the
 
 ## Releasing
 
-Publishing is done by CI, from a tag. Nothing is published from a developer machine, so the
-tarball on npm is always the one GitHub Actions built from a tagged commit, and it carries an
-npm provenance attestation pointing back at that commit and workflow run.
+Publishing is done by CI, from a tag, and finished by a human approving what CI staged. Nothing
+is built on a developer machine, so the tarball on npm is always the one GitHub Actions built
+from a tagged commit, and it carries an npm provenance attestation pointing back at that commit
+and workflow run.
 
 To cut a release:
 
@@ -257,10 +258,17 @@ To cut a release:
 2. Bump `version` in `package.json` (`npm version <major|minor|patch> --no-git-tag-version`
    keeps the lockfile in step).
 3. Commit both, then tag the commit `v<version>` and push the commit and the tag.
+4. Approve the staged version once CI has finished, which is what actually releases it:
+   `npm stage list` shows what is waiting and `npm stage approve <stage-id>` publishes it. This
+   runs from a developer machine and is the one step that answers a two-factor prompt.
 
 The tag triggers `.github/workflows/release.yml`, which refuses to go on if the tag and
 `package.json` disagree, then runs the same gates as CI (`check:toolchain`, `check`, `build`,
-`check:package`, `test`) before `npm publish --provenance --access public`. Authentication is
+`check:package`, `test`) before `npm stage publish --provenance --access public`. Staging
+uploads the version and holds it: it is not installable, and `npm install` still resolves to the
+previous release until it is approved. The tarball can be inspected with `npm stage download`
+first, and a version staged in error is dropped with `npm stage reject` rather than living
+forever as an unpublishable version number. Authentication is
 npm trusted publishing over the job's OIDC token — there is no npm token in repository
 secrets, and the package must be configured for trusted publishing against this repository and
 workflow on npmjs.com for the publish step to be authorised. That configuration lives on the
