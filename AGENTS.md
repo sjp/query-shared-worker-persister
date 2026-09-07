@@ -263,7 +263,17 @@ The tag triggers `.github/workflows/release.yml`, which refuses to go on if the 
 `check:package`, `test`) before `npm publish --provenance --access public`. Authentication is
 npm trusted publishing over the job's OIDC token — there is no npm token in repository
 secrets, and the package must be configured for trusted publishing against this repository and
-workflow on npmjs.com for the publish step to be authorised.
+workflow on npmjs.com for the publish step to be authorised. That configuration lives on the
+package's settings page, under a GitHub Actions trusted publisher naming the `sjp` owner, the
+`query-shared-worker-persister` repository and the `release.yml` workflow file, with the
+environment left blank because the job declares none. Without it the gates all pass and the
+publish is refused at the end, which is what happened on the first attempt at `v0.3.0`.
+
+Reaching for an npm token instead is a dead end worth not repeating. A classic publish token
+and a granular token both require a one-time password when the account enforces two-factor
+authentication, and CI has nothing to answer the prompt with, so the publish fails with `EOTP`
+after provenance has already been signed. Only a classic automation token bypasses that, and
+npm is in the process of restricting exactly that bypass.
 
 The dist-tag the publish uses is derived from the version, so a prerelease never becomes what
 `npm install` hands out. A plain `X.Y.Z` publishes under `latest`; a version with a prerelease
