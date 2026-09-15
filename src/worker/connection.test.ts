@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vitest";
 import { handleConnect, respond, type WorkerPort } from "./connection";
 import { PROTOCOL_VERSION, type StorageRequest, type StorageResponse } from "./protocol";
 import { CacheStore } from "./store";

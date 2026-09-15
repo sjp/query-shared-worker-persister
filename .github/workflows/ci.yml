@@ -31,25 +31,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
-      - name: Set up Vite+
-        uses: voidzero-dev/setup-vp@v1
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node-version }}
-          cache: true
-      - run: vp install --frozen-lockfile
-      # The browser suite drives a real Chromium. Cache the download, which is
-      # far larger and slower to fetch than the npm dependencies; the key tracks
-      # the lockfile because that is where the Playwright version lives.
+      - run: npm ci
       - name: Cache Playwright browsers
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
           restore-keys: playwright-${{ runner.os }}-
-      - run: vp run playwright:install
-      - run: vp run check:toolchain
-      - run: vp run check
-      - run: vp run build
-      - run: vp run check:package
-      - run: vp run check:types-consumer
-      - run: vp run test
+      - run: npm run playwright:install
+      - run: npm run check
+      - run: npm run build
+      - run: npm run check:package
+      - run: npm run check:types-consumer
+      - run: npm run test

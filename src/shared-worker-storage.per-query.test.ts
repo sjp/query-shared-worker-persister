@@ -1,6 +1,6 @@
 import { experimental_createQueryPersister } from "@tanstack/query-persist-client-core";
 import { QueryClient } from "@tanstack/query-core";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it } from "vitest";
 import { createSharedWorkerStorage, type PortAdapter } from "./shared-worker-storage";
 import { createErrorPort, createFakePort, createRecordingPort } from "./test-utils";
 import { PROTOCOL_VERSION, type StorageRequest, type StorageResponse } from "./worker/protocol";

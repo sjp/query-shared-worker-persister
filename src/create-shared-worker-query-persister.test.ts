@@ -1,5 +1,5 @@
 import { QueryClient } from "@tanstack/query-core";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it } from "vitest";
 import { experimental_createSharedWorkerQueryPersister } from "./create-shared-worker-query-persister";
 import {
   createFakePort,

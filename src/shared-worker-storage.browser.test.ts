@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { SharedWorkerStorage } from "./shared-worker-storage";
 import { recorder, rejectionFrom } from "./test-utils";
 

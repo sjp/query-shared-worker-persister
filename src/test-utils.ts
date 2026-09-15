@@ -1,4 +1,4 @@
-import { expect, type Mock, vi } from "vite-plus/test";
+import { expect, type Mock, vi } from "vitest";
 import { type PortAdapter, SharedWorkerStorageError } from "./shared-worker-storage";
 import { respond } from "./worker/connection";
 import {

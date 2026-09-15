@@ -3,7 +3,7 @@ import {
   type PersistedClient,
   persistQueryClientRestore,
 } from "@tanstack/query-persist-client-core";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createSharedWorkerPersister,
   type CreateSharedWorkerPersisterOptions,

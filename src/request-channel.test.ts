@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vitest";
 import { createRequestChannel, type PortAdapter } from "./request-channel";
 import { SharedWorkerStorageError } from "./storage-error";
 import {

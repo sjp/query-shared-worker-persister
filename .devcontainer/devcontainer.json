@@ -5,7 +5,6 @@
     "ghcr.io/devcontainers/features/node:": {
       "version": "26"
     },
-    "ghcr.io/helpers4/devcontainer/vite-plus:": {},
     "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
   },
   "mounts": ["source=claude-code-config,target=/home/vscode/.claude,type=volume"],

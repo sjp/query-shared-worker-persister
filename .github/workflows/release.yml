@@ -19,12 +19,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
-      - name: Set up Vite+
-        uses: voidzero-dev/setup-vp@v1
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
-          cache: true
-      - run: vp install --frozen-lockfile
+          cache: npm
+      - run: npm ci
       # A tag that disagrees with the manifest would publish a version nobody can
       # trace back to a commit, so stop before anything is built.
       - name: Check the tag matches package.json
@@ -61,19 +60,14 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
           restore-keys: playwright-${{ runner.os }}-
-      - run: vp run playwright:install
+      - run: npm run playwright:install
       # The same gates CI runs, because this is the build that ships: the tarball
       # must come from source that formats, lints, type checks and passes tests.
-      - run: vp run check:toolchain
-      - run: vp run check
-      - run: vp run build
-      - run: vp run check:package
-      - run: vp run check:types-consumer
-      - run: vp run test
-      # Trusted publishing, provenance and `npm stage` all need a recent npm; take
-      # the version the project already pins rather than whatever the runner ships.
-      - name: Match the pinned npm
-        run: npm install --global "npm@$(node --print "require('./package.json').packageManager.split('@')[1]")"
+      - run: npm run check
+      - run: npm run build
+      - run: npm run check:package
+      - run: npm run check:types-consumer
+      - run: npm run test
       - name: List the files that will be published
         run: npm publish --dry-run --tag "$DIST_TAG"
       # Staged rather than published outright: the version is uploaded and held,
