@@ -56,8 +56,8 @@
     "check:types-consumer": "tsc -p scripts/check-types-consumer && tsc -p scripts/check-types-consumer/tsconfig.strict.json",
     "fmt:check": "oxfmt --check",
     "fmt:fix": "oxfmt --write",
-    "lint": "oxlint --type-aware --type-check",
-    "lint:fix": "oxlint --type-aware --type-check --fix",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
     "playwright:install": "playwright install --with-deps chromium",
     "test": "vitest run",
     "test:watch": "vitest"

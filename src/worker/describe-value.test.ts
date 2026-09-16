@@ -36,6 +36,7 @@ describe("describeValue", () => {
   it("describes a symbol that has no description", () => {
     // There is nothing to name it by, and the empty parentheses are still the
     // useful part of the answer: what arrived was a symbol.
+    // oxlint-disable-next-line eslint/symbol-description
     expect(describeValue(Symbol())).toBe("Symbol()");
   });
 

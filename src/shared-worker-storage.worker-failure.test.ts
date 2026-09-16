@@ -1,9 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  createSharedWorkerStorage,
-  isSharedWorkerSupported,
-  type PortAdapter,
-  type SharedWorkerStorage,
+import { createSharedWorkerStorage, isSharedWorkerSupported } from "./shared-worker-storage";
+import type {
+  PortAdapter,
+  SharedWorkerStorage,
   SharedWorkerStorageError,
 } from "./shared-worker-storage";
 import {
@@ -11,6 +10,8 @@ import {
   fakeSharedWorker,
   recorder,
   rejectionFrom,
+  storageCauseOf,
+  storageErrorFrom,
   withConsoleSpies,
   withDocument,
   withSharedWorker,
@@ -26,6 +27,53 @@ import type { StorageRequest } from "./worker/protocol";
 
 /** The fake worker instance {@link fakeSharedWorker} hands back. */
 type FakeWorker = ReturnType<typeof fakeSharedWorker>["latest"];
+
+/** Build a storage over a fresh fake worker and hand back both. */
+async function withFailingWorker(
+  fn: (worker: FakeWorker, storage: SharedWorkerStorage) => Promise<void>,
+) {
+  await withConsoleSpies(async () => {
+    const worker = fakeSharedWorker({ dead: true });
+    await withSharedWorker(worker.FakeSharedWorker, async () => {
+      // Far longer than the test could tolerate, so any rejection that arrives
+      // proves it came from the fast path rather than the timer.
+      const storage = createSharedWorkerStorage({ timeoutMs: 60_000 });
+      await fn(worker.latest, storage);
+      storage.dispose();
+    });
+  });
+}
+
+/**
+ * A port whose `postMessage` throws, as a real `MessagePort` does for a value
+ * that cannot be structured-cloned.
+ */
+function createRefusingPort(cause: unknown): PortAdapter {
+  return {
+    onmessage: null,
+    postMessage() {
+      throw cause;
+    },
+  };
+}
+
+/** What a real port throws for an unclonable value. */
+function cloneError() {
+  return new DOMException("a function could not be cloned", "DataCloneError");
+}
+
+/**
+ * A port that never answers and can report, as a real `MessagePort` does, that
+ * the port it was entangled with has gone: the worker terminated, crashed or
+ * closed itself. Nothing else settles a request through it, so a rejection
+ * that arrives can only have come from the close.
+ */
+function createClosingPort() {
+  const postMessage = vi.fn<(request: StorageRequest) => void>();
+  const close = vi.fn<() => void>();
+  const port: PortAdapter = { onmessage: null, onclose: null, postMessage, close };
+  return { port, postMessage, close, closeFromWorker: () => port.onclose?.(new Event("close")) };
+}
 
 describe("isSharedWorkerSupported", () => {
   it("is false when SharedWorker is absent", async () => {
@@ -51,10 +99,14 @@ describe("no-op fallback when SharedWorker is unavailable", () => {
           await expect(storage.getItem("k")).resolves.toBeNull();
           await expect(storage.entries()).resolves.toEqual([]);
           await storage.removeItem("k");
-          expect(() => storage.dispose()).not.toThrow();
+          expect(() => {
+            storage.dispose();
+          }).not.toThrow();
           // The fallback carries the same disposal surface, so a caller using
           // `using` or `dispose()` needs no branch on which storage it was given.
-          expect(() => storage[Symbol.dispose]()).not.toThrow();
+          expect(() => {
+            storage[Symbol.dispose]();
+          }).not.toThrow();
           expect(warn).toHaveBeenCalledTimes(1);
         }),
       );
@@ -97,18 +149,21 @@ describe("no-op fallback when SharedWorker is unavailable", () => {
         await expect(storage.getItem("k")).resolves.toBeNull();
         await expect(storage.entries()).resolves.toEqual([]);
         await storage.removeItem("k");
-        expect(() => storage.dispose()).not.toThrow();
+        expect(() => {
+          storage.dispose();
+        }).not.toThrow();
         // The fallback carries the same disposal surface, so a caller using
         // `using` or `dispose()` needs no branch on which storage it was given.
-        expect(() => storage[Symbol.dispose]()).not.toThrow();
+        expect(() => {
+          storage[Symbol.dispose]();
+        }).not.toThrow();
         expect(warn).toHaveBeenCalledTimes(1);
         expect(warn.mock.calls[0]?.[0]).toContain("access denied");
         // The message is first so log filters keep matching, and the error
         // itself follows, so devtools can expand its `code` and its `cause`.
-        const reported = warn.mock.calls[0]?.[1];
-        expect(reported).toBeInstanceOf(SharedWorkerStorageError);
-        expect((reported as SharedWorkerStorageError).code).toBe("unsupported");
-        expect((reported as SharedWorkerStorageError).cause).toBeInstanceOf(DOMException);
+        const reported = storageErrorFrom(warn.mock.calls[0]?.[1]);
+        expect(reported.code).toBe("unsupported");
+        expect(reported.cause).toBeInstanceOf(DOMException);
       });
     });
   });
@@ -151,22 +206,6 @@ describe("no-op fallback when SharedWorker is unavailable", () => {
 });
 
 describe("when the SharedWorker itself fails", () => {
-  /** Build a storage over a fresh fake worker and hand back both. */
-  async function withFailingWorker(
-    fn: (worker: FakeWorker, storage: SharedWorkerStorage) => Promise<void>,
-  ) {
-    await withConsoleSpies(async () => {
-      const worker = fakeSharedWorker({ dead: true });
-      await withSharedWorker(worker.FakeSharedWorker, async () => {
-        // Far longer than the test could tolerate, so any rejection that arrives
-        // proves it came from the fast path rather than the timer.
-        const storage = createSharedWorkerStorage({ timeoutMs: 60_000 });
-        await fn(worker.latest, storage);
-        storage.dispose();
-      });
-    });
-  }
-
   it("rejects the in-flight writes with the transport error", async () => {
     await withFailingWorker(async (worker, storage) => {
       const inflight = storage.setItem("k", "v");
@@ -247,24 +286,6 @@ describe("when the SharedWorker itself fails", () => {
 });
 
 describe("when the port refuses the message", () => {
-  /**
-   * A port whose `postMessage` throws, as a real `MessagePort` does for a value
-   * that cannot be structured-cloned.
-   */
-  function createRefusingPort(cause: unknown): PortAdapter {
-    return {
-      onmessage: null,
-      postMessage() {
-        throw cause;
-      },
-    };
-  }
-
-  /** What a real port throws for an unclonable value. */
-  function cloneError() {
-    return new DOMException("a function could not be cloned", "DataCloneError");
-  }
-
   it("rejects a write as a transport failure, keeping the refusal as the cause", async () => {
     const cause = cloneError();
     const storage = createSharedWorkerStorage({ port: createRefusingPort(cause) });
@@ -286,7 +307,9 @@ describe("when the port refuses the message", () => {
       await expect(storage.setItem("k", "v")).rejects.toThrow(/Could not post a request/);
       expect(vi.getTimerCount()).toBe(0);
       // The pending entry is gone with it, so this has nothing left to settle.
-      expect(() => storage.dispose()).not.toThrow();
+      expect(() => {
+        storage.dispose();
+      }).not.toThrow();
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
@@ -303,7 +326,7 @@ describe("when the port refuses the message", () => {
     storage.dispose();
     expect(reported).toHaveLength(1);
     expect(reported[0]?.code).toBe("transport");
-    expect((reported[0]?.cause as SharedWorkerStorageError | undefined)?.code).toBe("transport");
+    expect(storageCauseOf(reported[0]).code).toBe("transport");
   });
 
   it("leaves the port usable, since one value it refused condemns nothing", async () => {
@@ -311,7 +334,9 @@ describe("when the port refuses the message", () => {
     const send = port.postMessage.bind(port);
     let refuse = true;
     port.postMessage = (request: StorageRequest) => {
-      if (refuse) throw cloneError();
+      if (refuse) {
+        throw cloneError();
+      }
       send(request);
     };
     const storage = createSharedWorkerStorage({ port });
@@ -324,19 +349,6 @@ describe("when the port refuses the message", () => {
 });
 
 describe("when the worker connection closes", () => {
-  /**
-   * A port that never answers and can report, as a real `MessagePort` does, that
-   * the port it was entangled with has gone: the worker terminated, crashed or
-   * closed itself. Nothing else settles a request through it, so a rejection
-   * that arrives can only have come from the close.
-   */
-  function createClosingPort() {
-    const postMessage = vi.fn<(request: StorageRequest) => void>();
-    const close = vi.fn<() => void>();
-    const port: PortAdapter = { onmessage: null, onclose: null, postMessage, close };
-    return { port, postMessage, close, closeFromWorker: () => port.onclose?.(new Event("close")) };
-  }
-
   /** Build a storage over a fresh closing port and hand back both. */
   async function withClosingPort(
     fn: (

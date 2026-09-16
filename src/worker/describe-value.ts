@@ -22,8 +22,15 @@ export function describeValue(value: unknown): string {
       return String(value);
     case "function":
       return "a function";
-    default:
-      if (value === null) return "null";
+    case "object":
+      if (value === null) {
+        return "null";
+      }
       return Array.isArray(value) ? "an array" : "an object";
+    default:
+      // Unreachable across the `typeof` results this build knows about, and
+      // kept so a future one still gets a name instead of `undefined` - this
+      // function is called to describe a fault and must never add one.
+      return "a value of an unknown type";
   }
 }

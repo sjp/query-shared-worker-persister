@@ -1,5 +1,9 @@
 import { describeValue } from "./describe-value";
-import type { StorageRequest, StorageResponse } from "./protocol";
+import type {
+  PROTOCOL_VERSION as ProtocolVersion,
+  StorageRequest,
+  StorageResponse,
+} from "./protocol";
 import type { CacheStore } from "./store";
 
 /**
@@ -35,14 +39,24 @@ const PACKAGE_NAME = "@sjpnz/query-shared-worker-persister";
  * the two copies - it is the type of the constant over there, which is the
  * literal number, so a bump that isn't matched here fails to compile.
  */
-const PROTOCOL_VERSION: typeof import("./protocol").PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION: typeof ProtocolVersion = 1;
 
 /** The operations a request may name; used to reject anything else up front. */
-const OPERATIONS = new Set<StorageRequest["op"]>(["getItem", "setItem", "removeItem", "entries"]);
+const OPERATIONS: ReadonlySet<string> = new Set<StorageRequest["op"]>([
+  "getItem",
+  "setItem",
+  "removeItem",
+  "entries",
+]);
+
+/** Whether `data` is a non-null object, so its fields can be probed safely. */
+function isRecord(data: unknown): data is Record<string, unknown> {
+  return typeof data === "object" && data !== null;
+}
 
 /** Narrow an arbitrary value to an object so its fields can be probed safely. */
 function asRecord(data: unknown): Record<string, unknown> | undefined {
-  return typeof data === "object" && data !== null ? (data as Record<string, unknown>) : undefined;
+  return isRecord(data) ? data : undefined;
 }
 
 /**
@@ -73,14 +87,23 @@ function readId(data: unknown): number | undefined {
  * the clients it should go on serving. Its own version travels back on every
  * response instead, for the client to compare against the one it speaks.
  */
+/** Whether `data` is a well-formed {@link StorageRequest} this worker can answer. */
+function isStorageRequest(data: unknown): data is StorageRequest {
+  return describeInvalidRequest(data) === undefined;
+}
+
 function describeInvalidRequest(data: unknown): string | undefined {
   const message = asRecord(data);
-  if (!message) return `expected an object, received ${data === null ? "null" : typeof data}`;
+  if (!message) {
+    return `expected an object, received ${data === null ? "null" : typeof data}`;
+  }
   if (message.kind !== "request") {
     return `expected kind "request", received ${describeValue(message.kind)}`;
   }
-  if (typeof message.id !== "number") return `id must be a number, received ${typeof message.id}`;
-  if (!OPERATIONS.has(message.op as StorageRequest["op"])) {
+  if (typeof message.id !== "number") {
+    return `id must be a number, received ${typeof message.id}`;
+  }
+  if (typeof message.op !== "string" || !OPERATIONS.has(message.op)) {
     return `unknown operation ${describeValue(message.op)}`;
   }
   // `entries` addresses the store as a whole, so it is the one operation with no
@@ -92,8 +115,9 @@ function describeInvalidRequest(data: unknown): string | undefined {
       ? undefined
       : `entries prefix must be a string, received ${typeof message.prefix}`;
   }
-  if (typeof message.key !== "string")
+  if (typeof message.key !== "string") {
     return `key must be a string, received ${typeof message.key}`;
+  }
   if (message.op === "setItem" && typeof message.value !== "string") {
     return `setItem value must be a string, received ${typeof message.value}`;
   }
@@ -148,17 +172,26 @@ export function handleConnect(
   store: Pick<CacheStore, "handle">,
   port: WorkerPort | null | undefined,
 ): void {
-  if (!port) return;
+  if (!port) {
+    return;
+  }
   port.onmessage = (event) => {
     const data = event.data;
     try {
-      const reason = describeInvalidRequest(data);
-      if (reason === undefined) {
-        port.postMessage(respond(store, data as StorageRequest));
+      if (isStorageRequest(data)) {
+        port.postMessage(respond(store, data));
         return;
       }
+      // Re-run the checks to name the fault. Only the rejection path pays for
+      // it, and it keeps the answer and the explanation from drifting apart.
+      const reason = describeInvalidRequest(data) ?? "malformed request";
       const id = readId(data);
-      if (id !== undefined) {
+      if (id === undefined) {
+        // Most likely another same-origin script talking to this worker rather
+        // than a fault of ours, so warn instead of erroring - but say so, since
+        // the alternative is a message vanishing without trace.
+        console.warn(`[${PACKAGE_NAME}] Ignoring an unrecognized message: ${reason}`);
+      } else {
         port.postMessage({
           kind: "response",
           version: PROTOCOL_VERSION,
@@ -166,11 +199,6 @@ export function handleConnect(
           ok: false,
           error: `Malformed request: ${reason}`,
         });
-      } else {
-        // Most likely another same-origin script talking to this worker rather
-        // than a fault of ours, so warn instead of erroring - but say so, since
-        // the alternative is a message vanishing without trace.
-        console.warn(`[${PACKAGE_NAME}] Ignoring an unrecognized message: ${reason}`);
       }
     } catch (err) {
       // Nothing above is meant to throw - validation is written not to, and

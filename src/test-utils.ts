@@ -1,13 +1,15 @@
-import { expect, type Mock, vi } from "vitest";
-import { type PortAdapter, SharedWorkerStorageError } from "./shared-worker-storage";
+import { expect, vi } from "vitest";
+import { messageEvent } from "./message-event";
+import type { Mock } from "vitest";
+import { SharedWorkerStorageError } from "./shared-worker-storage";
+import type { PortAdapter } from "./shared-worker-storage";
 import { respond } from "./worker/connection";
-import {
-  PROTOCOL_VERSION,
-  type StorageRequest,
-  type StorageResponse,
-  type StorageResult,
-} from "./worker/protocol";
+import { describeValue } from "./worker/describe-value";
+import { PROTOCOL_VERSION } from "./worker/protocol";
+import type { StorageRequest, StorageResponse, StorageResult } from "./worker/protocol";
 import { CacheStore } from "./worker/store";
+
+export { messageErrorEvent, messageEvent } from "./message-event";
 
 /**
  * A fake `MessagePort` that stands in for the SharedWorker connection: it pipes
@@ -25,7 +27,7 @@ export function createFakePort(store = new CacheStore()): PortAdapter {
     postMessage(request: StorageRequest) {
       // Reply on a microtask to mimic the async hop to the worker and back.
       queueMicrotask(() => {
-        port.onmessage?.({ data: respond(store, request) } as MessageEvent<unknown>);
+        port.onmessage?.(messageEvent(respond(store, request)));
       });
     },
   };
@@ -41,9 +43,9 @@ export function createErrorPort(error = "boom"): PortAdapter {
     onmessage: null,
     postMessage(request: StorageRequest) {
       queueMicrotask(() => {
-        port.onmessage?.({
-          data: { kind: "response", id: request.id, ok: false, error },
-        } as MessageEvent<StorageResponse>);
+        port.onmessage?.(
+          messageEvent<StorageResponse>({ kind: "response", id: request.id, ok: false, error }),
+        );
       });
     },
   };
@@ -63,9 +65,15 @@ export function createResultPort(result: StorageResult): PortAdapter {
     onmessage: null,
     postMessage(request: StorageRequest) {
       queueMicrotask(() => {
-        port.onmessage?.({
-          data: { kind: "response", id: request.id, ok: true, result, version: PROTOCOL_VERSION },
-        } as MessageEvent<StorageResponse>);
+        port.onmessage?.(
+          messageEvent<StorageResponse>({
+            kind: "response",
+            id: request.id,
+            ok: true,
+            result,
+            version: PROTOCOL_VERSION,
+          }),
+        );
       });
     },
   };
@@ -93,21 +101,33 @@ function createForwardingPort(
     onmessage: null,
     postMessage: (request) => {
       onPost(request);
+      // Not `Window.postMessage`: `answering` is a `PortAdapter`, whose
+      // `postMessage` takes the message alone.
+      // oxlint-disable-next-line unicorn/require-post-message-target-origin
       answering?.postMessage(request);
     },
     ...extra,
   };
   // The answering port replies through its own handler, so point that at
   // whichever handler the client has installed on the port it was given.
-  if (answering) answering.onmessage = (event) => port.onmessage?.(event);
+  if (answering) {
+    answering.onmessage = (event) => port.onmessage?.(event);
+  }
   return port;
+}
+
+/** A port that records, the requests it recorded, and the store behind it. */
+export interface RecordingPort {
+  port: PortAdapter;
+  sent: StorageRequest[];
+  store: CacheStore;
 }
 
 /**
  * A {@link createFakePort} that also keeps every request posted through it, for
  * the tests that assert on what the client asked as well as on what it got back.
  */
-export function createRecordingPort(store = new CacheStore()) {
+export function createRecordingPort(store = new CacheStore()): RecordingPort {
   const sent: StorageRequest[] = [];
   const port = createForwardingPort(createFakePort(store), (request) => void sent.push(request));
   return { port, sent, store };
@@ -120,16 +140,22 @@ export function createRecordingPort(store = new CacheStore()) {
  * test that deletes one leaves no trace of it behind.
  */
 async function withGlobal<T>(name: string, value: unknown, fn: () => T | Promise<T>): Promise<T> {
-  const g = globalThis as unknown as Record<string, unknown>;
+  const g: Record<string, unknown> = globalThis;
   const had = name in g;
   const original = g[name];
-  if (value === undefined) delete g[name];
-  else g[name] = value;
+  if (value === undefined) {
+    delete g[name];
+  } else {
+    g[name] = value;
+  }
   try {
     return await fn();
   } finally {
-    if (had) g[name] = original;
-    else delete g[name];
+    if (had) {
+      g[name] = original;
+    } else {
+      delete g[name];
+    }
   }
 }
 
@@ -179,6 +205,25 @@ export interface FakeSharedWorkerOptions {
   dead?: boolean;
 }
 
+/** One constructed fake worker, with the spies the tests read back off it. */
+export interface FakeSharedWorkerInstance {
+  readonly postMessage: Mock<(request: StorageRequest) => void>;
+  readonly close: Mock<() => void>;
+  readonly port: PortAdapter;
+  onerror: ((event: { message: string }) => void) | null;
+  /** Report a worker that never started, as `onerror` does in the browser. */
+  fail: (message?: string) => void;
+}
+
+/** What {@link fakeSharedWorker} hands back. */
+export interface FakeSharedWorkerHarness {
+  FakeSharedWorker: new (url: string | URL, options?: WorkerOptions) => FakeSharedWorkerInstance;
+  constructions: SharedWorkerConstruction[];
+  store: CacheStore;
+  /** The most recently constructed worker; fails the test if there is none. */
+  readonly latest: FakeSharedWorkerInstance;
+}
+
 /**
  * A recording `SharedWorker` stand-in to hand to {@link withSharedWorker}, for
  * the paths that construct a real worker rather than taking an injected port.
@@ -196,7 +241,7 @@ export interface FakeSharedWorkerOptions {
 export function fakeSharedWorker({
   store = new CacheStore(),
   dead = false,
-}: FakeSharedWorkerOptions = {}) {
+}: FakeSharedWorkerOptions = {}): FakeSharedWorkerHarness {
   const constructions: SharedWorkerConstruction[] = [];
   const instances: FakeSharedWorker[] = [];
 
@@ -227,16 +272,24 @@ export function fakeSharedWorker({
     constructions,
     store,
     /** The most recently constructed worker; fails the test if there is none. */
-    get latest(): FakeSharedWorker {
-      const worker = instances[instances.length - 1];
-      if (!worker) throw new Error("no SharedWorker was constructed");
+    get latest(): FakeSharedWorkerInstance {
+      const worker = instances.at(-1);
+      if (!worker) {
+        throw new Error("no SharedWorker was constructed");
+      }
       return worker;
     },
   };
 }
 
+/** A list of reported errors, and the `onError` handler that fills it. */
+export interface Recorder {
+  reported: SharedWorkerStorageError[];
+  onError: (error: SharedWorkerStorageError) => void;
+}
+
 /** An `onError` handler that records what it was given, and the list it fills. */
-export function recorder() {
+export function recorder(): Recorder {
   const reported: SharedWorkerStorageError[] = [];
   return { reported, onError: (error: SharedWorkerStorageError) => void reported.push(error) };
 }
@@ -252,12 +305,43 @@ export async function rejectionFrom(
   call: () => unknown,
   errorClass: new (...args: never[]) => SharedWorkerStorageError = SharedWorkerStorageError,
 ): Promise<SharedWorkerStorageError> {
-  const error = await Promise.resolve(call()).then(
+  const error: unknown = await Promise.resolve(call()).then(
     () => undefined,
     (reason: unknown) => reason,
   );
   expect(error).toBeInstanceOf(errorClass);
-  return error as SharedWorkerStorageError;
+  if (!(error instanceof errorClass)) {
+    // Unreachable: the assertion above has already failed the test. Written as a
+    // guard rather than a cast so the narrowing is the run-time check itself.
+    throw new Error(`expected a ${errorClass.name}, received ${describeValue(error)}`);
+  }
+  return error;
+}
+
+/**
+ * `value`, narrowed to one of our errors. The narrowing is a real `instanceof`
+ * rather than an assertion, so a test that reads `code` off the wrong thing
+ * fails saying what it got instead of reading `undefined` off a lie.
+ */
+export function storageErrorFrom(value: unknown): SharedWorkerStorageError {
+  if (!(value instanceof SharedWorkerStorageError)) {
+    throw new Error(`expected a SharedWorkerStorageError, received ${describeValue(value)}`);
+  }
+  return value;
+}
+
+/** The `cause` of `error`, narrowed to one of ours. */
+export function storageCauseOf(error: Error | undefined): SharedWorkerStorageError {
+  return storageErrorFrom(error?.cause);
+}
+
+/** The `cause` of `error`, narrowed to any `Error`. */
+export function causeOf(error: Error | undefined): Error {
+  const cause = error?.cause;
+  if (!(cause instanceof Error)) {
+    throw new Error(`expected an Error cause, received ${describeValue(cause)}`);
+  }
+  return cause;
 }
 
 /** The console channels {@link withConsoleSpies} silences, as spies. */

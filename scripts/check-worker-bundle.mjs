@@ -38,13 +38,15 @@ try {
  * prose: the worker's comments discuss the imports it deliberately does not
  * make.
  */
-function blankNonCode(source) {
-  const out = [...source];
-  const end = source.length;
+function blankNonCode(text) {
+  const out = [...text];
+  const end = text.length;
 
   const blank = (from, to) => {
     for (let i = from; i < to; i += 1) {
-      if (out[i] !== "\n") out[i] = " ";
+      if (out[i] !== "\n") {
+        out[i] = " ";
+      }
     }
   };
 
@@ -75,13 +77,15 @@ function blankNonCode(source) {
   const scanString = (start, quote) => {
     let i = start + 1;
     while (i < end) {
-      const char = source[i];
+      const char = text[i];
       if (char === "\\") {
         blank(i, i + 2);
         i += 2;
         continue;
       }
-      if (char === quote) return i + 1;
+      if (char === quote) {
+        return i + 1;
+      }
       blank(i, i + 1);
       i += 1;
     }
@@ -93,16 +97,20 @@ function blankNonCode(source) {
     let i = start + 1;
     let inClass = false;
     while (i < end) {
-      const char = source[i];
-      if (char === "\n") return i; // Unterminated: not a literal after all.
+      const char = text[i];
+      if (char === "\n") {
+        return i;
+      } // Unterminated: not a literal after all.
       if (char === "\\") {
         blank(i, i + 2);
         i += 2;
         continue;
       }
-      if (char === "[") inClass = true;
-      else if (char === "]") inClass = false;
-      else if (char === "/" && !inClass) {
+      if (char === "[") {
+        inClass = true;
+      } else if (char === "]") {
+        inClass = false;
+      } else if (char === "/" && !inClass) {
         blank(start + 1, i);
         return i + 1;
       }
@@ -119,14 +127,16 @@ function blankNonCode(source) {
   const scanTemplate = (start) => {
     let i = start + 1;
     while (i < end) {
-      const char = source[i];
+      const char = text[i];
       if (char === "\\") {
         blank(i, i + 2);
         i += 2;
         continue;
       }
-      if (char === "`") return i + 1;
-      if (char === "$" && source[i + 1] === "{") {
+      if (char === "`") {
+        return i + 1;
+      }
+      if (char === "$" && text[i + 1] === "{") {
         i = scanCode(i + 2, true);
         continue;
       }
@@ -146,18 +156,18 @@ function blankNonCode(source) {
     let previous = "";
 
     while (i < end) {
-      const char = source[i];
-      const next = source[i + 1];
+      const char = text[i];
+      const next = text[i + 1];
 
       if (char === "/" && next === "/") {
-        const newline = source.indexOf("\n", i);
+        const newline = text.indexOf("\n", i);
         const stop = newline === -1 ? end : newline;
         blank(i, stop);
         i = stop;
         continue;
       }
       if (char === "/" && next === "*") {
-        const close = source.indexOf("*/", i + 2);
+        const close = text.indexOf("*/", i + 2);
         const stop = close === -1 ? end : close + 2;
         blank(i, stop);
         i = stop;
@@ -180,17 +190,24 @@ function blankNonCode(source) {
       }
       if (/[\w$]/.test(char)) {
         let word = i;
-        while (word < end && /[\w$]/.test(source[word])) word += 1;
-        previous = source.slice(i, word);
+        while (word < end && /[\w$]/.test(text[word])) {
+          word += 1;
+        }
+        previous = text.slice(i, word);
         i = word;
         continue;
       }
-      if (char === "{") depth += 1;
-      else if (char === "}") {
-        if (untilCloseBrace && depth === 0) return i + 1;
+      if (char === "{") {
+        depth += 1;
+      } else if (char === "}") {
+        if (untilCloseBrace && depth === 0) {
+          return i + 1;
+        }
         depth -= 1;
       }
-      if (!/\s/.test(char)) previous = char;
+      if (!/\s/.test(char)) {
+        previous = char;
+      }
       i += 1;
     }
     return i;
@@ -215,15 +232,20 @@ const REFERENCES = [
 const code = blankNonCode(source);
 const lineStarts = [0];
 for (let i = 0; i < source.length; i += 1) {
-  if (source[i] === "\n") lineStarts.push(i + 1);
+  if (source[i] === "\n") {
+    lineStarts.push(i + 1);
+  }
 }
 const lineOf = (index) => {
   let low = 0;
   let high = lineStarts.length - 1;
   while (low < high) {
     const mid = Math.ceil((low + high) / 2);
-    if (lineStarts[mid] <= index) low = mid;
-    else high = mid - 1;
+    if (lineStarts[mid] <= index) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
   }
   return low;
 };

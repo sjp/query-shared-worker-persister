@@ -1,4 +1,96 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "ignorePatterns": ["scripts/check-types-consumer/**"]
+  "ignorePatterns": ["scripts/check-types-consumer/**"],
+  // Type-aware linting and the experimental type check run as part of `lint`
+  // rather than as CLI flags, so an editor's oxlint integration sees the same
+  // rules the command line does. Both need `oxlint-tsgolint` installed.
+  "options": {
+    "typeAware": true,
+    "typeCheck": true,
+    "denyWarnings": true,
+    "reportUnusedDisableDirectives": "deny"
+  },
+  "plugins": [
+    "eslint",
+    "typescript",
+    "oxc",
+    "unicorn",
+    "import",
+    "promise",
+    "node",
+    "vitest",
+    "jsdoc"
+  ],
+  // Everything that catches a fault is on. `style` and `restriction` are off as
+  // categories - they are taste, and oxfmt already owns formatting - with the
+  // few members that do prevent faults named individually under `rules`.
+  "categories": {
+    "correctness": "deny",
+    "suspicious": "deny",
+    "perf": "deny",
+    "pedantic": "deny",
+    "style": "off",
+    "restriction": "off"
+  },
+  "rules": {
+    // --- Off: pedantic rules that do not pay for themselves here ---------------
+    // Size limits are arbitrary, and the table-driven tests here are long on
+    // purpose.
+    "eslint/max-classes-per-file": "off",
+    "eslint/max-lines": "off",
+    "eslint/max-lines-per-function": "off",
+    // Several tests await in sequence precisely to fix the order of the requests
+    // they then assert on; Promise.all would destroy what they measure.
+    "eslint/no-await-in-loop": "off",
+    "eslint/no-inline-comments": "off",
+    // Adding `u` to an existing literal changes how it parses, so this is not
+    // the free fix it looks like.
+    "eslint/require-unicode-regexp": "off",
+    // Documentation coverage is a separate concern from correctness, and the
+    // remaining jsdoc rules still check what the comments that exist claim.
+    "jsdoc/require-param": "off",
+    "jsdoc/require-returns": "off",
+    "jsdoc/require-yields": "off",
+    // Would require `readonly` on every parameter including types owned by
+    // TanStack, which we cannot change.
+    "typescript/prefer-readonly-parameter-types": "off",
+    // The fix it applies strips `undefined` from *required* parameters, which
+    // silently changes the call - and several tests exist to pass exactly that.
+    "unicorn/no-useless-undefined": "off",
+    // `PortAdapter` and `WorkerPort` are exported interfaces modelled on the
+    // `on*` handler properties of a real `MessagePort`, deliberately, so a
+    // caller can hand in a plain object. Requiring `addEventListener` would mean
+    // redesigning public API, not fixing a fault.
+    "unicorn/prefer-add-event-listener": "off",
+    // A guard that narrows a type reads as a conditional to this rule, so it
+    // fights the type-aware rules that ask for exactly those guards.
+    "vitest/no-conditional-in-test": "off",
+
+    // --- On: style/restriction rules that do prevent faults --------------------
+    "eslint/curly": ["deny", "all"],
+    "import/consistent-type-specifier-style": ["deny", "prefer-top-level"],
+    "typescript/consistent-type-imports": "deny",
+    "typescript/explicit-module-boundary-types": "deny",
+
+    // --- Tuned ----------------------------------------------------------------
+    // The fake `SharedWorker`s the tests install have to be constructible with
+    // `new`, so a constructor-only (or empty) class is the right shape for them.
+    "typescript/no-extraneous-class": ["deny", { "allowConstructorOnly": true, "allowEmpty": true }]
+  },
+  "overrides": [
+    {
+      // Not covered by a tsconfig, so every value in it types as `error` and the
+      // type-aware rules have nothing real to say.
+      "files": ["**/*.mjs"],
+      "rules": {
+        "typescript/no-unsafe-argument": "off",
+        "typescript/no-unsafe-assignment": "off",
+        "typescript/no-unsafe-call": "off",
+        "typescript/no-unsafe-member-access": "off",
+        "typescript/no-unsafe-return": "off",
+        "typescript/no-unsafe-type-assertion": "off",
+        "typescript/strict-boolean-expressions": "off"
+      }
+    }
+  ]
 }

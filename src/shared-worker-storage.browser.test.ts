@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { SharedWorkerStorage } from "./shared-worker-storage";
 import { recorder, rejectionFrom } from "./test-utils";
+import type * as BundleModule from "./index";
 
 /**
  * The one suite that runs against a genuine `SharedWorker` in a real browser.
@@ -40,7 +41,7 @@ const WORKER_PATH = "../dist/cache.worker.js";
  * and the Node suite depend on a build having happened first. The types still
  * come from the sources, which is what the declarations are generated from.
  */
-type Bundle = typeof import("./index");
+type Bundle = typeof BundleModule;
 let bundle: Bundle;
 
 /** Storages opened by the current test, closed again when it ends. */
@@ -77,19 +78,39 @@ function uniqueKey(name: string) {
 beforeAll(async () => {
   const url = new URL(BUNDLE_PATH, import.meta.url).href;
   try {
+    // The URL is computed, so TypeScript types this import as `any` and there is
+    // nothing to narrow from - the whole point of the suite is that the module
+    // on disk is the published one, which only running it can establish.
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion
     bundle = (await import(/* @vite-ignore */ url)) as Bundle;
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     throw new Error(
       `Could not load the built bundle from ${BUNDLE_PATH} (${reason}). This suite runs ` +
         "against the package as it is published, so build it first (npm run build).",
+      { cause: cause },
     );
   }
 });
 
 afterEach(() => {
-  for (const storage of opened.splice(0)) storage.dispose();
+  for (const storage of opened.splice(0)) {
+    storage.dispose();
+  }
 });
+
+/**
+ * A module SharedWorker that terminates itself the moment a tab connects,
+ * standing in for every way a running worker can go away — the browser
+ * reclaiming it, a crash, or a developer killing it from devtools. Built as a
+ * blob rather than a file in the source tree because it is a worker only this
+ * one test wants; the blob URL carries the page's own origin, so it is a
+ * worker script this page is allowed to load.
+ */
+function closingWorkerUrl() {
+  const script = "self.onconnect = () => { self.close(); };";
+  return URL.createObjectURL(new Blob([script], { type: "text/javascript" }));
+}
 
 describe("a real SharedWorker", () => {
   it("is available in this browser", () => {
@@ -299,19 +320,6 @@ describe("a worker hosted at an explicit workerUrl", () => {
 });
 
 describe("a worker that stops after it started", () => {
-  /**
-   * A module SharedWorker that terminates itself the moment a tab connects,
-   * standing in for every way a running worker can go away — the browser
-   * reclaiming it, a crash, or a developer killing it from devtools. Built as a
-   * blob rather than a file in the source tree because it is a worker only this
-   * one test wants; the blob URL carries the page's own origin, so it is a
-   * worker script this page is allowed to load.
-   */
-  function closingWorkerUrl() {
-    const script = "self.onconnect = () => { self.close(); };";
-    return URL.createObjectURL(new Blob([script], { type: "text/javascript" }));
-  }
-
   it("fails requests straight away and reports the closed connection once", async () => {
     // Asserted rather than left to fail as a timeout: the whole test rests on
     // this browser firing `close` at a port whose worker is gone, which it does

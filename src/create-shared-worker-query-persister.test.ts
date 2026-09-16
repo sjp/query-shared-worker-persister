@@ -31,7 +31,9 @@ describe("experimental_createSharedWorkerQueryPersister", () => {
     const source = new QueryClient();
     source.setQueryData(["user", 1], { name: "Ada" });
     const query = source.getQueryCache().find({ queryKey: ["user", 1] });
-    if (!query) throw new Error("the query was not created");
+    if (!query) {
+      throw new Error("the query was not created");
+    }
     await writer.persistQuery(query);
 
     const reader = experimental_createSharedWorkerQueryPersister({
@@ -54,15 +56,18 @@ describe("experimental_createSharedWorkerQueryPersister", () => {
 
     const source = new QueryClient();
     source.setQueryData(["user", 1], { name: "Ada" });
-    for (const query of source.getQueryCache().getAll()) await persister.persistQuery(query);
+    for (const query of source.getQueryCache().getAll()) {
+      await persister.persistQuery(query);
+    }
     await persister.restoreQueries(new QueryClient());
 
     // The `-` TanStack joins `prefix` to a query hash with is part of the
     // filter, and the caller never had to know that.
     expect(entriesPrefixes(sent)).toEqual(["MY_APP-"]);
-    await expect(persister.storage.entries()).resolves.toEqual([
-      [expect.stringMatching(/^MY_APP-/) as unknown as string, expect.any(String)],
-    ]);
+    // Typed as `unknown` because the entry holds asymmetric matchers, which do
+    // not fit the `[string, string]` the resolved value is declared to be.
+    const expected: unknown = [[expect.stringMatching(/^MY_APP-/), expect.any(String)]];
+    await expect(persister.storage.entries()).resolves.toEqual(expected);
 
     persister.dispose();
   });
@@ -93,7 +98,9 @@ describe("experimental_createSharedWorkerQueryPersister", () => {
 
     const source = new QueryClient();
     source.setQueryData(["user", 1], { name: "Ada" });
-    for (const query of source.getQueryCache().getAll()) await theirs.persistQuery(query);
+    for (const query of source.getQueryCache().getAll()) {
+      await theirs.persistQuery(query);
+    }
 
     const target = new QueryClient();
     await ours.restoreQueries(target);
@@ -113,7 +120,9 @@ describe("experimental_createSharedWorkerQueryPersister", () => {
       expect(worker.latest.close).toHaveBeenCalledTimes(1);
       await expect(persister.storage.setItem("k", "v")).rejects.toThrow(/disposed/);
       // Idempotent, like the storage's own disposal.
-      expect(() => persister.dispose()).not.toThrow();
+      expect(() => {
+        persister.dispose();
+      }).not.toThrow();
       expect(worker.latest.close).toHaveBeenCalledTimes(1);
     });
   });
@@ -136,7 +145,9 @@ describe("experimental_createSharedWorkerQueryPersister", () => {
 
       const source = new QueryClient();
       source.setQueryData(["user", 1], { name: "Ada" });
-      for (const query of source.getQueryCache().getAll()) await persister.persistQuery(query);
+      for (const query of source.getQueryCache().getAll()) {
+        await persister.persistQuery(query);
+      }
 
       const target = new QueryClient();
       await persister.restoreQueries(target);

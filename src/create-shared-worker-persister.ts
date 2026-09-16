@@ -1,10 +1,10 @@
 import { createAsyncStoragePersister } from "@tanstack/query-async-storage-persister";
 import type { Persister } from "@tanstack/query-persist-client-core";
-import {
-  createSharedWorkerStorage,
-  type PortAdapter,
-  type SharedWorkerStorage,
-  type SharedWorkerStorageError,
+import { createSharedWorkerStorage } from "./shared-worker-storage";
+import type {
+  PortAdapter,
+  SharedWorkerStorage,
+  SharedWorkerStorageError,
 } from "./shared-worker-storage";
 
 /** Options for {@link createAsyncStoragePersister}, minus the `storage` we supply. */

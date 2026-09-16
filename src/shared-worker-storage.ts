@@ -1,5 +1,6 @@
 import type { AsyncStorage } from "@tanstack/query-persist-client-core";
-import { createRequestChannel, type PortAdapter, type RequestChannel } from "./request-channel";
+import { createRequestChannel } from "./request-channel";
+import type { PortAdapter, RequestChannel } from "./request-channel";
 import { SharedWorkerStorageError } from "./storage-error";
 import type { StorageEntries, StorageRequest, StorageResult } from "./worker/protocol";
 
@@ -277,8 +278,12 @@ export function createSharedWorkerStorage(
   // worker of its own is a property of the string, not of the environment or of
   // what the storage ends up talking to.
   validateTimeoutMs(timeoutMs);
-  if (options.namespace !== undefined) validateNamespace(options.namespace);
-  if (!options.port && options.workerUrl !== undefined) validateWorkerUrl(options.workerUrl);
+  if (options.namespace !== undefined) {
+    validateNamespace(options.namespace);
+  }
+  if (!options.port && options.workerUrl !== undefined) {
+    validateWorkerUrl(options.workerUrl);
+  }
 
   // A signal that aborted before this call asks for a storage that is over
   // before it begins. Nothing is set up for one: no worker is constructed only
@@ -371,7 +376,9 @@ function createConnectedStorage(
   // The bookkeeping runs before the report, so the storage is left consistent
   // whatever the caller's reporter does with the error it is handed.
   function handleWorkerFailure(error: SharedWorkerStorageError) {
-    if (disposed) return;
+    if (disposed) {
+      return;
+    }
     fatalError = error;
     releaseTransport();
     channel?.rejectAll(error);
@@ -392,9 +399,13 @@ function createConnectedStorage(
   // No connection where one was wanted means the constructor refused; there is
   // no storage to hand back. The other way to be here without one is the
   // aborted signal above, which keeps its storage.
-  if (!connection && !abortedUpFront) return undefined;
+  if (!connection && !abortedUpFront) {
+    return undefined;
+  }
 
-  if (connection) channel = openChannel(connection.port, timeoutMs, options, handleWorkerFailure);
+  if (connection) {
+    channel = openChannel(connection.port, timeoutMs, options, handleWorkerFailure);
+  }
 
   /** Post one request, unless this storage already knows how it has to end. */
   function request(build: (id: number) => StorageRequest): Promise<StorageResult> {
@@ -408,11 +419,15 @@ function createConnectedStorage(
     // storage built without one is the storage that was disposed before it
     // opened a transport; checking it here is also what leaves something to
     // post through below.
-    if (disposed || !channel) return Promise.reject(disposedError());
+    if (disposed || !channel) {
+      return Promise.reject(disposedError());
+    }
     // Likewise once the worker has failed: there is no port left to answer, so
     // hand back the transport error that explains why rather than a timeout that
     // doesn't.
-    if (fatalError) return Promise.reject(fatalError);
+    if (fatalError) {
+      return Promise.reject(fatalError);
+    }
     return channel.request(build);
   }
 
@@ -448,14 +463,20 @@ function createConnectedStorage(
       // worker-side error, a reply that broke the protocol — is reported on
       // every read, so a cache that silently stays cold still says why.
       const alreadyReported = error === fatalError || (disposedRead && disposedReadReported);
-      if (disposedRead) disposedReadReported = true;
-      if (!alreadyReported) report(options, "warn", emptyReadReport(error));
+      if (disposedRead) {
+        disposedReadReported = true;
+      }
+      if (!alreadyReported) {
+        report(options, "warn", emptyReadReport(error));
+      }
       return empty;
     });
   }
 
   function dispose() {
-    if (disposed) return;
+    if (disposed) {
+      return;
+    }
     disposed = true;
     detachAbortListener?.();
     detachAbortListener = undefined;
@@ -475,9 +496,13 @@ function createConnectedStorage(
   // built disposed, and a second abort would have nothing left to tear down.
   if (options.signal && !abortedUpFront) {
     const signal = options.signal;
-    const onAbort = () => dispose();
+    const onAbort = () => {
+      dispose();
+    };
     signal.addEventListener("abort", onAbort, { once: true });
-    detachAbortListener = () => signal.removeEventListener("abort", onAbort);
+    detachAbortListener = () => {
+      signal.removeEventListener("abort", onAbort);
+    };
   }
 
   return storage;
@@ -531,9 +556,11 @@ interface StorageOperations {
  * it, and disposal under both of its names.
  *
  * Each method narrows the shared result type to the shape its operation is
- * defined to return. The cast is sound because `request` only resolves a result
- * that matched the operation it was sent for, and a read that failed falls back
- * to the empty value of that same shape.
+ * defined to return. The narrowing is a run-time check rather than an assertion:
+ * `request` only resolves a result that matched the operation it was sent for,
+ * and a read that failed falls back to the empty value of that same shape, so
+ * the check never fires - but it costs one `Array.isArray` to not have to take
+ * that on trust.
  */
 function createStorageMethods(
   options: CreateSharedWorkerStorageOptions,
@@ -541,14 +568,21 @@ function createStorageMethods(
 ): SharedWorkerStorage {
   return {
     mode: "shared-worker",
-    getItem: (key) =>
-      read((id) => ({ kind: "request", id, op: "getItem", key }), null) as Promise<string | null>,
+    getItem: async (key) => {
+      const result = await read((id) => ({ kind: "request", id, op: "getItem", key }), null);
+      // `read` is typed to the shared result union, so the shape is re-checked
+      // here rather than asserted. A mismatch cannot arise - the channel only
+      // resolves a result that matched its request - but were one to, falling
+      // back to the empty value is what a failed read already does.
+      return Array.isArray(result) ? null : result;
+    },
     entries: async () => {
       const { entriesPrefix } = options;
-      const pairs = (await read(
+      const result = await read(
         (id) => ({ kind: "request", id, op: "entries", prefix: entriesPrefix }),
         [],
-      )) as StorageEntries;
+      );
+      const pairs = Array.isArray(result) ? result : [];
       // Filtered again here because the worker may be an older build than this
       // tab — it runs whichever script the first tab to connect loaded — and one
       // that predates `prefix` answers with the whole store. Repeating the test
@@ -639,7 +673,9 @@ function report(
  * timer that would overflow it.
  */
 function validateTimeoutMs(timeoutMs: number): void {
-  if (timeoutMs === Number.POSITIVE_INFINITY) return;
+  if (timeoutMs === Number.POSITIVE_INFINITY) {
+    return;
+  }
   // `Number.isFinite` rather than a `typeof` check: it rejects `NaN` and, for
   // callers without types, anything that isn't a number at all.
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS) {
@@ -663,7 +699,9 @@ function validateTimeoutMs(timeoutMs: number): void {
  * through a key that collided.
  */
 function validateNamespace(namespace: string): void {
-  if (namespace !== "") return;
+  if (namespace !== "") {
+    return;
+  }
   throw new TypeError(
     `[${PACKAGE_NAME}] namespace must not be empty: an empty name is the default ` +
       "worker's, so this storage would share the store the option asks to stay out of. " +
@@ -691,9 +729,13 @@ function validateNamespace(namespace: string): void {
  * no-op fallback is the better answer than a throw.
  */
 function validateWorkerUrl(workerUrl: string | URL): void {
-  if (typeof location === "undefined") return;
+  if (typeof location === "undefined") {
+    return;
+  }
   const page = new URL(location.href);
-  if (page.origin === "null") return;
+  if (page.origin === "null") {
+    return;
+  }
   let resolved: URL;
   try {
     resolved = new URL(workerUrl, page);
@@ -701,7 +743,9 @@ function validateWorkerUrl(workerUrl: string | URL): void {
     // Not a URL, so not one that can be placed on an origin.
     return;
   }
-  if (resolved.origin === page.origin) return;
+  if (resolved.origin === page.origin) {
+    return;
+  }
   throw new TypeError(
     `[${PACKAGE_NAME}] workerUrl must be on the page's own origin: the page is ` +
       `${page.origin} and ${String(workerUrl)} resolves to ${resolved.origin}. ` +
@@ -721,18 +765,19 @@ function disposedError(): SharedWorkerStorageError {
  * fetches), and writes are dropped.
  * Returned when `SharedWorker` is unavailable so callers can keep one code path.
  */
+// There is no port and nothing in flight, so a no-op storage's disposal has
+// nothing to do; it exists so callers can keep one code path, `using` included.
+function disposeNothing(): void {}
+
 function createNoopStorage(): SharedWorkerStorage {
-  // There is no port and nothing in flight, so disposal has nothing to do; it
-  // exists so callers can keep one code path, `using` included.
-  const dispose = () => {};
   return {
     mode: "noop",
     getItem: () => Promise.resolve(null),
     entries: () => Promise.resolve([]),
     setItem: () => Promise.resolve(),
     removeItem: () => Promise.resolve(),
-    dispose,
-    [Symbol.dispose]: dispose,
+    dispose: disposeNothing,
+    [Symbol.dispose]: disposeNothing,
   };
 }
 
@@ -777,7 +822,8 @@ function connectSharedWorker(
   try {
     worker = new SharedWorker(workerUrl ?? new URL("./cache.worker.js", import.meta.url), {
       type: "module",
-      name: namespace ? `${WORKER_NAME}:${namespace}` : WORKER_NAME,
+      name:
+        namespace === undefined || namespace === "" ? WORKER_NAME : `${WORKER_NAME}:${namespace}`,
     });
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);

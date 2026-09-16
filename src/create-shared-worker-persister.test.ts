@@ -1,18 +1,15 @@
 import { QueryClient } from "@tanstack/query-core";
-import {
-  type PersistedClient,
-  persistQueryClientRestore,
-} from "@tanstack/query-persist-client-core";
+import { persistQueryClientRestore } from "@tanstack/query-persist-client-core";
+import type { PersistedClient } from "@tanstack/query-persist-client-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  createSharedWorkerPersister,
-  type CreateSharedWorkerPersisterOptions,
-} from "./create-shared-worker-persister";
+import { createSharedWorkerPersister } from "./create-shared-worker-persister";
+import type { CreateSharedWorkerPersisterOptions } from "./create-shared-worker-persister";
 import { SharedWorkerStorageError } from "./shared-worker-storage";
 import {
   createFakePort,
   fakeSharedWorker,
   recorder,
+  storageErrorFrom,
   withConsoleSpies,
   withDocument,
   withLocation,
@@ -74,7 +71,7 @@ describe("createSharedWorkerPersister", () => {
           timeoutMs: Number.POSITIVE_INFINITY,
         });
         const removing = Promise.resolve(persister.removeClient());
-        const settled = vi.fn();
+        const settled = vi.fn<(value: unknown) => void>();
         void removing.then(settled, settled);
         // Well past the default deadline, so a request still standing here can
         // only be one the option was carried through for.
@@ -244,7 +241,9 @@ describe("createSharedWorkerPersister", () => {
       await expect(removing).rejects.toThrow(/disposed/);
       expect(worker.latest.close).toHaveBeenCalledTimes(1);
       // Idempotent, like the storage's own disposal.
-      expect(() => persister.dispose()).not.toThrow();
+      expect(() => {
+        persister.dispose();
+      }).not.toThrow();
       expect(worker.latest.close).toHaveBeenCalledTimes(1);
     });
   });
@@ -339,7 +338,6 @@ describe("createSharedWorkerPersister", () => {
         // Giving up (returning nothing) ends the retry loop after one attempt.
         retry: ({ error }) => {
           errors.push(error);
-          return undefined;
         },
       });
       await persister.persistClient(persistedClient());
@@ -348,7 +346,7 @@ describe("createSharedWorkerPersister", () => {
       // a caller can decide what to do from `code` instead of matching text.
       const [error] = errors;
       expect(error).toBeInstanceOf(SharedWorkerStorageError);
-      expect((error as SharedWorkerStorageError).code).toBe("timeout");
+      expect(storageErrorFrom(error).code).toBe("timeout");
       expect(String(error)).toMatch(/timed out/);
     });
   });
@@ -369,9 +367,9 @@ describe("throttling repeated writes", () => {
   });
 
   /** Persist twice under one key, and report what the store held in between. */
-  async function persistTwice(options: CreateSharedWorkerPersisterOptions, waitMs: number) {
+  function persistTwice(options: CreateSharedWorkerPersisterOptions, waitMs: number) {
     const { FakeSharedWorker, store } = fakeSharedWorker();
-    return await withSharedWorker(FakeSharedWorker, async () => {
+    return withSharedWorker(FakeSharedWorker, async () => {
       const persister = createSharedWorkerPersister({
         ...options,
         key: "K",

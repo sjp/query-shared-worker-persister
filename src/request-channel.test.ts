@@ -1,13 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
-import { createRequestChannel, type PortAdapter } from "./request-channel";
+import { createRequestChannel } from "./request-channel";
+import type { PortAdapter } from "./request-channel";
 import { SharedWorkerStorageError } from "./storage-error";
 import {
   createDeadPort,
   createFakePort,
   createRecordingPort,
   createResultPort,
+  messageErrorEvent,
+  messageEvent,
 } from "./test-utils";
-import { PROTOCOL_VERSION, type StorageRequest } from "./worker/protocol";
+import { PROTOCOL_VERSION } from "./worker/protocol";
+import type { StorageRequest } from "./worker/protocol";
 import { CacheStore } from "./worker/store";
 
 /**
@@ -21,8 +25,8 @@ import { CacheStore } from "./worker/store";
 
 /** The handlers a channel is given, as spies, plus the channel itself. */
 function channelOver(port: PortAdapter, timeoutMs = 10_000) {
-  const onUndeliverableMessage = vi.fn();
-  const onDisconnect = vi.fn();
+  const onUndeliverableMessage = vi.fn<() => void>();
+  const onDisconnect = vi.fn<() => void>();
   const channel = createRequestChannel(port, timeoutMs, {
     onUndeliverableMessage,
     onDisconnect,
@@ -39,15 +43,13 @@ function setItem(key: string, value: string) {
   return (id: number): StorageRequest => ({ kind: "request", id, op: "setItem", key, value });
 }
 
-/** A port that answers every request with `data`, whatever was asked. */
-function createAnsweringPort(data: unknown): PortAdapter {
+/** A port that answers every request with whatever `answer` makes of it. */
+function createAnsweringPort(answer: (request: StorageRequest) => unknown): PortAdapter {
   const port: PortAdapter = {
     onmessage: null,
     postMessage(request: StorageRequest) {
       queueMicrotask(() => {
-        port.onmessage?.({
-          data: typeof data === "function" ? data(request) : data,
-        } as MessageEvent<unknown>);
+        port.onmessage?.(messageEvent(answer(request)));
       });
     },
   };
@@ -76,7 +78,7 @@ describe("createRequestChannel", () => {
   });
 
   it("starts a port that can be started", () => {
-    const start = vi.fn();
+    const start = vi.fn<() => void>();
     const { channel } = channelOver({ onmessage: null, postMessage() {}, start });
     expect(start).toHaveBeenCalledTimes(1);
     channel.close();
@@ -191,7 +193,7 @@ describe("createRequestChannel", () => {
     const port = createDeadPort();
     const { channel } = channelOver(port, 20);
     const inflight = channel.request(getItem("k"));
-    port.onmessage?.({ data } as MessageEvent<unknown>);
+    port.onmessage?.(messageEvent(data));
     // Only the deadline settles it, proving the message never matched.
     await expect(inflight).rejects.toThrow(/timed out/);
     channel.close();
@@ -226,7 +228,9 @@ describe("createRequestChannel", () => {
     const send = port.postMessage.bind(port);
     let refuse = true;
     port.postMessage = (request: StorageRequest) => {
-      if (refuse) throw new Error("nope");
+      if (refuse) {
+        throw new Error("nope");
+      }
       send(request);
     };
     const { channel } = channelOver(port);
@@ -260,7 +264,7 @@ describe("createRequestChannel", () => {
     const port = createDeadPort();
     const { channel, onUndeliverableMessage } = channelOver(port, 20);
     const inflight = channel.request(getItem("k"));
-    port.onmessageerror?.({} as MessageEvent);
+    port.onmessageerror?.(messageErrorEvent());
     expect(onUndeliverableMessage).toHaveBeenCalledTimes(1);
     // The event named no request, so this one still falls to its own deadline.
     await expect(inflight).rejects.toThrow(/timed out/);
@@ -278,7 +282,7 @@ describe("createRequestChannel", () => {
   });
 
   it("detaches every handler and closes the port, once however often it is asked", () => {
-    const close = vi.fn();
+    const close = vi.fn<() => void>();
     const port: PortAdapter = { onmessage: null, postMessage() {}, close };
     const { channel } = channelOver(port);
     channel.close();
@@ -293,6 +297,8 @@ describe("createRequestChannel", () => {
   it("leaves a port with no close of its own alone", () => {
     const port: PortAdapter = { onmessage: null, postMessage() {} };
     const { channel } = channelOver(port);
-    expect(() => channel.close()).not.toThrow();
+    expect(() => {
+      channel.close();
+    }).not.toThrow();
   });
 });

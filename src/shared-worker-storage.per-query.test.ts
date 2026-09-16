@@ -1,9 +1,11 @@
 import { experimental_createQueryPersister } from "@tanstack/query-persist-client-core";
 import { QueryClient } from "@tanstack/query-core";
 import { describe, expect, it } from "vitest";
-import { createSharedWorkerStorage, type PortAdapter } from "./shared-worker-storage";
-import { createErrorPort, createFakePort, createRecordingPort } from "./test-utils";
-import { PROTOCOL_VERSION, type StorageRequest, type StorageResponse } from "./worker/protocol";
+import { createSharedWorkerStorage } from "./shared-worker-storage";
+import type { PortAdapter } from "./shared-worker-storage";
+import { createErrorPort, createFakePort, createRecordingPort, messageEvent } from "./test-utils";
+import { PROTOCOL_VERSION } from "./worker/protocol";
+import type { StorageRequest, StorageResponse } from "./worker/protocol";
 import { CacheStore } from "./worker/store";
 
 /**
@@ -12,16 +14,16 @@ import { CacheStore } from "./worker/store";
  * TanStack's per-query persister makes of the storage on top of it.
  */
 
-describe("the entriesPrefix option", () => {
-  /** A store holding one app's entries alongside another's. */
-  function sharedStore() {
-    const store = new CacheStore();
-    store.setItem("APP-a", "1");
-    store.setItem("OTHER-b", "2");
-    store.setItem("APP-c", "3");
-    return store;
-  }
+/** A store holding one app's entries alongside another's. */
+function sharedStore() {
+  const store = new CacheStore();
+  store.setItem("APP-a", "1");
+  store.setItem("OTHER-b", "2");
+  store.setItem("APP-c", "3");
+  return store;
+}
 
+describe("the entriesPrefix option", () => {
   it("asks the worker for only the entries under the prefix", async () => {
     const { port, sent } = createRecordingPort(sharedStore());
     const storage = createSharedWorkerStorage({ port, entriesPrefix: "APP-" });
@@ -70,8 +72,8 @@ describe("the entriesPrefix option", () => {
       onmessage: null,
       postMessage(request: StorageRequest) {
         queueMicrotask(() => {
-          port.onmessage?.({
-            data: {
+          port.onmessage?.(
+            messageEvent<StorageResponse>({
               kind: "response",
               id: request.id,
               ok: true,
@@ -79,8 +81,8 @@ describe("the entriesPrefix option", () => {
                 ["APP-a", "1"],
                 ["OTHER-b", "2"],
               ],
-            },
-          } as MessageEvent<StorageResponse>);
+            }),
+          );
         });
       },
     };
@@ -116,11 +118,14 @@ describe("the entriesPrefix option", () => {
 
     const source = new QueryClient();
     source.setQueryData(["user", 1], { name: "Ada" });
-    for (const query of source.getQueryCache().getAll()) await persister.persistQuery(query);
+    for (const query of source.getQueryCache().getAll()) {
+      await persister.persistQuery(query);
+    }
 
-    await expect(storage.entries()).resolves.toEqual([
-      [expect.stringMatching(/^MY_APP-/) as unknown as string, expect.any(String)],
-    ]);
+    // Typed as `unknown` because the entry holds asymmetric matchers, which do
+    // not fit the `[string, string]` the resolved value is declared to be.
+    const expected: unknown = [[expect.stringMatching(/^MY_APP-/), expect.any(String)]];
+    await expect(storage.entries()).resolves.toEqual(expected);
 
     const restored = new QueryClient();
     await persister.restoreQueries(restored);
@@ -145,7 +150,9 @@ describe("per-query persistence", () => {
     const source = new QueryClient();
     source.setQueryData(["user", 1], { name: "Ada" });
     const query = source.getQueryCache().find({ queryKey: ["user", 1] });
-    if (!query) throw new Error("the query was not created");
+    if (!query) {
+      throw new Error("the query was not created");
+    }
     await experimental_createQueryPersister({ storage: writer }).persistQuery(query);
 
     await expect(writer.entries()).resolves.toEqual([
@@ -170,7 +177,9 @@ describe("per-query persistence", () => {
     client.setQueryData(["user", 1], { name: "Ada" });
     client.setQueryData(["user", 2], { name: "Grace" });
     const cache = client.getQueryCache();
-    for (const query of cache.getAll()) await persister.persistQuery(query);
+    for (const query of cache.getAll()) {
+      await persister.persistQuery(query);
+    }
 
     await persister.removeQueries({ queryKey: ["user", 1], exact: true });
 

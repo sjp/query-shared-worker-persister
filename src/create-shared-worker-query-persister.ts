@@ -1,13 +1,13 @@
 import {
   experimental_createQueryPersister,
   PERSISTER_KEY_PREFIX,
-  type StoragePersisterOptions,
 } from "@tanstack/query-persist-client-core";
-import {
-  createSharedWorkerStorage,
-  type PortAdapter,
-  type SharedWorkerStorage,
-  type SharedWorkerStorageError,
+import type { StoragePersisterOptions } from "@tanstack/query-persist-client-core";
+import { createSharedWorkerStorage } from "./shared-worker-storage";
+import type {
+  PortAdapter,
+  SharedWorkerStorage,
+  SharedWorkerStorageError,
 } from "./shared-worker-storage";
 
 /**
@@ -15,6 +15,10 @@ import {
  * supply. Its values are strings, because that is what the shared worker's
  * store holds.
  */
+// `string` is also the upstream default, but it is pinned here on purpose: the
+// comment above is only true while it holds, and the peer range allows a version
+// that changes it.
+// oxlint-disable-next-line typescript/no-unnecessary-type-arguments
 type QueryPersisterOptions = Omit<StoragePersisterOptions<string>, "storage">;
 
 /** What {@link experimental_createQueryPersister} hands back over a string store. */

@@ -1,7 +1,36 @@
 import { describe, expect, it, vi } from "vitest";
-import { handleConnect, respond, type WorkerPort } from "./connection";
-import { PROTOCOL_VERSION, type StorageRequest, type StorageResponse } from "./protocol";
+import { handleConnect, respond } from "./connection";
+import type { WorkerPort } from "./connection";
+import { PROTOCOL_VERSION } from "./protocol";
+import type { StorageRequest, StorageResponse } from "./protocol";
 import { CacheStore } from "./store";
+import { messageErrorEvent, messageEvent } from "../message-event";
+
+/** A port plus the messages it sent, wired to a fresh store. */
+function connect() {
+  const sent: StorageResponse[] = [];
+  const port: WorkerPort = {
+    onmessage: null,
+    postMessage: (message) => {
+      sent.push(message);
+    },
+  };
+  const store = new CacheStore();
+  handleConnect(store, port);
+  return {
+    sent,
+    store,
+    deliver: (data: unknown) => port.onmessage?.(messageEvent(data)),
+    messageError: () => port.onmessageerror?.(messageErrorEvent()),
+  };
+}
+
+/** An object that refers back to itself, as structured cloning permits. */
+function cyclic(): Record<string, unknown> {
+  const value: Record<string, unknown> = {};
+  value.self = value;
+  return value;
+}
 
 describe("respond", () => {
   it("wraps a successful getItem in an ok response, echoing the id", () => {
@@ -77,6 +106,8 @@ describe("respond", () => {
   it("stringifies a non-Error throw", () => {
     const store = {
       handle: () => {
+        // A non-Error throw is the whole subject of this test.
+        // oxlint-disable-next-line eslint/no-throw-literal, typescript/only-throw-error
         throw "weird";
       },
     };
@@ -91,35 +122,24 @@ describe("respond", () => {
 });
 
 describe("handleConnect", () => {
-  /** A port plus the messages it sent, wired to a fresh store. */
-  function connect() {
-    const sent: StorageResponse[] = [];
-    const port: WorkerPort = {
-      onmessage: null,
-      postMessage: (message) => sent.push(message),
-    };
-    const store = new CacheStore();
-    handleConnect(store, port);
-    return {
-      sent,
-      store,
-      deliver: (data: unknown) => port.onmessage?.({ data } as MessageEvent<unknown>),
-      messageError: () => port.onmessageerror?.({} as MessageEvent),
-    };
-  }
-
   it("does nothing when no port is supplied", () => {
-    expect(() => handleConnect(new CacheStore(), undefined)).not.toThrow();
-    expect(() => handleConnect(new CacheStore(), null)).not.toThrow();
+    expect(() => {
+      handleConnect(new CacheStore(), undefined);
+    }).not.toThrow();
+    expect(() => {
+      handleConnect(new CacheStore(), null);
+    }).not.toThrow();
   });
 
   it("starts the port and answers requests against the store", () => {
     const store = new CacheStore();
     const sent: StorageResponse[] = [];
-    const start = vi.fn();
+    const start = vi.fn<() => void>();
     const port: WorkerPort = {
       onmessage: null,
-      postMessage: (message) => sent.push(message),
+      postMessage: (message) => {
+        sent.push(message);
+      },
       start,
     };
 
@@ -128,8 +148,7 @@ describe("handleConnect", () => {
     expect(start).toHaveBeenCalledTimes(1);
     expect(port.onmessage).not.toBeNull();
 
-    const deliver = (request: StorageRequest) =>
-      port.onmessage?.({ data: request } as MessageEvent<StorageRequest>);
+    const deliver = (request: StorageRequest) => port.onmessage?.(messageEvent(request));
     deliver({ kind: "request", id: 1, op: "setItem", key: "k", value: "v" });
     deliver({ kind: "request", id: 2, op: "getItem", key: "k" });
     // `entries` carries no key, so it also proves validation doesn't demand one.
@@ -177,13 +196,6 @@ describe("handleConnect", () => {
   });
 
   describe("malformed messages", () => {
-    /** An object that refers back to itself, as structured cloning permits. */
-    function cyclic(): Record<string, unknown> {
-      const value: Record<string, unknown> = {};
-      value.self = value;
-      return value;
-    }
-
     it.each([
       ["an unknown op", { kind: "request", id: 5, op: "clear", key: "k" }],
       ["a missing kind", { id: 5, op: "getItem", key: "k" }],

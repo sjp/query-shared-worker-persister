@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  type CreateSharedWorkerStorageOptions,
-  createSharedWorkerStorage,
-  type SharedWorkerStorage,
+import { createSharedWorkerStorage } from "./shared-worker-storage";
+import type {
+  CreateSharedWorkerStorageOptions,
+  SharedWorkerStorage,
 } from "./shared-worker-storage";
 import {
   createDeadPort,
@@ -24,6 +24,19 @@ import {
  * immediately, so without validation the option would look honoured while every
  * request failed on the next tick - a cache that is simply always cold.
  */
+/** Construct a storage over a recording fake and hand back what it asked for. */
+async function constructionFor(options?: CreateSharedWorkerStorageOptions) {
+  const { FakeSharedWorker, constructions } = fakeSharedWorker({ dead: true });
+  await withSharedWorker(FakeSharedWorker, () => {
+    createSharedWorkerStorage(options).dispose();
+  });
+  const construction = constructions[0];
+  if (!construction) {
+    throw new Error("no SharedWorker was constructed");
+  }
+  return construction;
+}
+
 describe("the timeoutMs option", () => {
   const invalid: Array<[label: string, value: number]> = [
     ["zero", 0],
@@ -66,11 +79,13 @@ describe("the timeoutMs option", () => {
       timeoutMs: Number.POSITIVE_INFINITY,
     });
     const write = Promise.resolve(storage.setItem("k", "v"));
-    const settled = vi.fn();
+    const settled = vi.fn<(value: unknown) => void>();
     void write.then(settled, settled);
     // Long enough that any timer the overflow would have created - the 0ms one a
     // raw `setTimeout(fn, Infinity)` produces - would have fired several times.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 50);
+    });
     expect(settled).not.toHaveBeenCalled();
 
     // Only disposal settles it, and the write rejects rather than hanging on.
@@ -138,7 +153,7 @@ describe("the workerUrl option", () => {
     );
   });
 
-  it("holds it against nothing where there is no page", async () => {
+  it("holds it against nothing where there is no page", () => {
     // A server evaluating the module that builds the persister: no origin to
     // compare against, and no worker being constructed either way.
     let storage!: SharedWorkerStorage;
@@ -155,9 +170,9 @@ describe("the workerUrl option", () => {
     const { FakeSharedWorker } = fakeSharedWorker({ dead: true });
     await withLocation({ href: "file:///app/index.html" }, () =>
       withSharedWorker(FakeSharedWorker, () => {
-        expect(() =>
-          createSharedWorkerStorage({ workerUrl: "https://cdn.test/w.js" }).dispose(),
-        ).not.toThrow();
+        expect(() => {
+          createSharedWorkerStorage({ workerUrl: "https://cdn.test/w.js" }).dispose();
+        }).not.toThrow();
       }),
     );
   });
@@ -232,17 +247,6 @@ describe("the namespace option", () => {
 });
 
 describe("the SharedWorker it constructs", () => {
-  /** Construct a storage over a recording fake and hand back what it asked for. */
-  async function constructionFor(options?: CreateSharedWorkerStorageOptions) {
-    const { FakeSharedWorker, constructions } = fakeSharedWorker({ dead: true });
-    await withSharedWorker(FakeSharedWorker, () => {
-      createSharedWorkerStorage(options).dispose();
-    });
-    const construction = constructions[0];
-    if (!construction) throw new Error("no SharedWorker was constructed");
-    return construction;
-  }
-
   it("defaults to the cache.worker.js published beside this module", async () => {
     // Resolved against this module's own URL, which is what the consumer's
     // bundler has to trace in order to copy the asset into its output.

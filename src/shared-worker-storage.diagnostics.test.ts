@@ -1,18 +1,18 @@
 import { describe, expect, it } from "vitest";
+import { createSharedWorkerStorage, SharedWorkerStorageError } from "./shared-worker-storage";
+import type { PortAdapter, SharedWorkerStorage } from "./shared-worker-storage";
 import {
-  createSharedWorkerStorage,
-  type PortAdapter,
-  type SharedWorkerStorage,
-  SharedWorkerStorageError,
-} from "./shared-worker-storage";
-import {
+  causeOf,
   createDeadPort,
   createErrorPort,
   createFakePort,
   createResultPort,
   fakeSharedWorker,
+  messageErrorEvent,
+  messageEvent,
   recorder,
   rejectionFrom,
+  storageCauseOf,
   withConsoleSpies,
   withDocument,
   withSharedWorker,
@@ -31,16 +31,16 @@ import type { StorageRequest, StorageResponse, StorageResult } from "./worker/pr
  * the entry every other tab is using. A tab that was merely slow would take the
  * whole cache down with it, so reads resolve empty instead of rejecting.
  */
-describe("a read the worker cannot answer", () => {
-  /** What both reads produced, and how many warnings they logged. */
-  async function readFrom(storage: SharedWorkerStorage) {
-    return await withConsoleSpies(async ({ warn }) => ({
-      item: await storage.getItem("k"),
-      entries: await storage.entries(),
-      warnings: warn.mock.calls.length,
-    }));
-  }
+/** What both reads produced, and how many warnings they logged. */
+function readFrom(storage: SharedWorkerStorage) {
+  return withConsoleSpies(async ({ warn }) => ({
+    item: await storage.getItem("k"),
+    entries: await storage.entries(),
+    warnings: warn.mock.calls.length,
+  }));
+}
 
+describe("a read the worker cannot answer", () => {
   it("resolves empty and warns when the worker never answers", async () => {
     const storage = createSharedWorkerStorage({ port: createDeadPort(), timeoutMs: 20 });
     await expect(readFrom(storage)).resolves.toEqual({ item: null, entries: [], warnings: 2 });
@@ -143,7 +143,7 @@ describe("diagnostics", () => {
       expect(spies.warn).not.toHaveBeenCalled();
     });
     expect(reported[0]?.code).toBe("unsupported");
-    expect((reported[0]?.cause as Error | undefined)?.message).toBe("access denied");
+    expect(causeOf(reported[0]).message).toBe("access denied");
   });
 
   it("reports a worker that fails after construction once, and rejects with that error", async () => {
@@ -177,7 +177,7 @@ describe("diagnostics", () => {
     await withConsoleSpies(async (spies) => {
       const port = createFakePort();
       const storage = createSharedWorkerStorage({ port, onError });
-      port.onmessageerror?.({} as MessageEvent);
+      port.onmessageerror?.(messageErrorEvent());
       await storage.setItem("k", "v");
       expect(spies.error).not.toHaveBeenCalled();
       storage.dispose();
@@ -198,10 +198,13 @@ describe("diagnostics", () => {
         requests.push(request);
       },
     };
-    const answer = (request: StorageRequest, result: StorageResult) => {
-      port.onmessage?.({
-        data: { kind: "response", id: request.id, ok: true, result },
-      } as MessageEvent<StorageResponse>);
+    const answer = (request: StorageRequest | undefined, result: StorageResult) => {
+      if (!request) {
+        throw new Error("no such request was sent");
+      }
+      port.onmessage?.(
+        messageEvent<StorageResponse>({ kind: "response", id: request.id, ok: true, result }),
+      );
     };
 
     await withConsoleSpies(async (spies) => {
@@ -213,9 +216,9 @@ describe("diagnostics", () => {
 
       // The event carries no id, so the two requests whose responses are still
       // on their way have to settle on them as though nothing had happened.
-      port.onmessageerror?.({} as MessageEvent);
-      answer(requests[1] as StorageRequest, "v");
-      answer(requests[2] as StorageRequest, null);
+      port.onmessageerror?.(messageErrorEvent());
+      answer(requests[1], "v");
+      answer(requests[2], null);
       await expect(read).resolves.toBe("v");
       await expect(write).resolves.toBeUndefined();
 
@@ -247,7 +250,7 @@ describe("diagnostics", () => {
     expect(reported.map((error) => error.code)).toEqual(["timeout", "timeout"]);
     // The read that gave up is described, and the failure it gave up on is kept.
     expect(reported[0]?.message).toContain("continuing as though it were empty");
-    expect((reported[0]?.cause as SharedWorkerStorageError | undefined)?.code).toBe("timeout");
+    expect(storageCauseOf(reported[0]).code).toBe("timeout");
   });
 
   it("reports reads made after disposal once per storage", async () => {
@@ -267,7 +270,7 @@ describe("diagnostics", () => {
     });
     expect(reported.map((error) => error.code)).toEqual(["disposed", "disposed"]);
     expect(reported[0]?.message).toContain("continuing as though it were empty");
-    expect((reported[0]?.cause as SharedWorkerStorageError | undefined)?.code).toBe("disposed");
+    expect(storageCauseOf(reported[0]).code).toBe("disposed");
   });
 
   it("keeps a worker-side error as the cause of the read that gave up on it", async () => {
@@ -283,9 +286,9 @@ describe("diagnostics", () => {
     expect(reported[0]?.message).toContain("continuing as though it were empty");
     // The worker's own error is kept whole, so a caller can look past the
     // description of the empty read to what the worker actually said.
-    const cause = reported[0]?.cause as SharedWorkerStorageError | undefined;
-    expect(cause?.code).toBe("protocol");
-    expect(cause?.message).toBe("boom");
+    const cause = storageCauseOf(reported[0]);
+    expect(cause.code).toBe("protocol");
+    expect(cause.message).toBe("boom");
   });
 
   it("leaves the console alone in the paths that report nothing", async () => {
@@ -383,17 +386,17 @@ describe("an onError handler that throws", () => {
         const storage = createSharedWorkerStorage({ onError: throwingOnError, timeoutMs: 60_000 });
         const inFlight = storage.setItem("k", "v");
         worker.latest.fail("404");
-        const failure = await rejectionFrom(() => inFlight);
-        expect(failure.code).toBe("transport");
-        expect(failure.message).toContain("404");
+        const reportedFailure = await rejectionFrom(() => inFlight);
+        expect(reportedFailure.code).toBe("transport");
+        expect(reportedFailure.message).toContain("404");
         // The bookkeeping the report interrupted all happened: the port is
         // closed, later writes fail fast on the recorded error rather than
         // waiting out the timeout, and later reads still resolve empty.
         expect(worker.latest.close).toHaveBeenCalled();
-        await expect(storage.setItem("k", "v")).rejects.toBe(failure);
+        await expect(storage.setItem("k", "v")).rejects.toBe(reportedFailure);
         await expect(storage.getItem("k")).resolves.toBeNull();
         storage.dispose();
-        return failure;
+        return reportedFailure;
       });
       // One dead worker, one report, and one log of the handler that threw on it.
       expect(error).toHaveBeenCalledTimes(1);

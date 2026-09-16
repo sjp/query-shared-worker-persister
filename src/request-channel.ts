@@ -1,11 +1,10 @@
 import { SharedWorkerStorageError } from "./storage-error";
-import {
-  PROTOCOL_VERSION,
-  UNVERSIONED_PROTOCOL_VERSION,
-  type StorageEntries,
-  type StorageRequest,
-  type StorageResponse,
-  type StorageResult,
+import { PROTOCOL_VERSION, UNVERSIONED_PROTOCOL_VERSION } from "./worker/protocol";
+import type {
+  StorageEntries,
+  StorageRequest,
+  StorageResponse,
+  StorageResult,
 } from "./worker/protocol";
 
 /**
@@ -139,11 +138,17 @@ export function createRequestChannel(
 
   port.onmessage = (event: MessageEvent<unknown>) => {
     const message = event.data;
-    if (!isStorageResponse(message)) return;
+    if (!isStorageResponse(message)) {
+      return;
+    }
     const entry = pending.get(message.id);
-    if (!entry) return;
+    if (!entry) {
+      return;
+    }
     pending.delete(message.id);
-    if (entry.timer !== undefined) clearTimeout(entry.timer);
+    if (entry.timer !== undefined) {
+      clearTimeout(entry.timer);
+    }
     const version = message.version ?? UNVERSIONED_PROTOCOL_VERSION;
     if (version !== PROTOCOL_VERSION) {
       entry.reject(
@@ -155,8 +160,9 @@ export function createRequestChannel(
       return;
     }
     if (message.ok) {
-      if (matchesOperation(entry.op, message.result)) entry.resolve(message.result);
-      else {
+      if (matchesOperation(entry.op, message.result)) {
+        entry.resolve(message.result);
+      } else {
         entry.reject(
           new SharedWorkerStorageError(
             "protocol",
@@ -168,8 +174,12 @@ export function createRequestChannel(
       entry.reject(new SharedWorkerStorageError("protocol", message.error));
     }
   };
-  port.onmessageerror = () => handlers.onUndeliverableMessage();
-  port.onclose = () => handlers.onDisconnect();
+  port.onmessageerror = () => {
+    handlers.onUndeliverableMessage();
+  };
+  port.onclose = () => {
+    handlers.onDisconnect();
+  };
   port.start?.();
 
   function request(build: (id: number) => StorageRequest): Promise<StorageResult> {
@@ -202,7 +212,9 @@ export function createRequestChannel(
         port.postMessage({ ...message, version: PROTOCOL_VERSION });
       } catch (cause) {
         pending.delete(id);
-        if (timer !== undefined) clearTimeout(timer);
+        if (timer !== undefined) {
+          clearTimeout(timer);
+        }
         reject(
           new SharedWorkerStorageError(
             "transport",
@@ -217,14 +229,18 @@ export function createRequestChannel(
 
   function rejectAll(error: SharedWorkerStorageError) {
     for (const entry of pending.values()) {
-      if (entry.timer !== undefined) clearTimeout(entry.timer);
+      if (entry.timer !== undefined) {
+        clearTimeout(entry.timer);
+      }
       entry.reject(error);
     }
     pending.clear();
   }
 
   function close() {
-    if (closed) return;
+    if (closed) {
+      return;
+    }
     closed = true;
     port.onmessage = null;
     port.onmessageerror = null;
@@ -235,6 +251,11 @@ export function createRequestChannel(
   return { request, rejectAll, close };
 }
 
+/** Whether `data` is a non-null object, so its fields can be probed safely. */
+function isRecord(data: unknown): data is Record<string, unknown> {
+  return typeof data === "object" && data !== null;
+}
+
 /**
  * Whether `data` is a well-formed {@link StorageResponse}. Checked field by
  * field rather than trusting the declared `MessageEvent` type, which says
@@ -243,11 +264,19 @@ export function createRequestChannel(
  * value the protocol doesn't allow.
  */
 function isStorageResponse(data: unknown): data is StorageResponse {
-  if (typeof data !== "object" || data === null) return false;
-  const message = data as Record<string, unknown>;
-  if (message.kind !== "response" || typeof message.id !== "number") return false;
-  if (message.version !== undefined && typeof message.version !== "number") return false;
-  if (message.ok === true) return isStorageResult(message.result);
+  if (!isRecord(data)) {
+    return false;
+  }
+  const message = data;
+  if (message.kind !== "response" || typeof message.id !== "number") {
+    return false;
+  }
+  if (message.version !== undefined && typeof message.version !== "number") {
+    return false;
+  }
+  if (message.ok === true) {
+    return isStorageResult(message.result);
+  }
   return message.ok === false && typeof message.error === "string";
 }
 

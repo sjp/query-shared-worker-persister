@@ -14,4 +14,6 @@ declare const self: SharedWorkerGlobalScope;
  */
 const store = new CacheStore();
 
-self.onconnect = (event: MessageEvent) => handleConnect(store, event.ports[0]);
+self.onconnect = (event: MessageEvent) => {
+  handleConnect(store, event.ports[0]);
+};

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { createSharedWorkerStorage, type PortAdapter } from "./shared-worker-storage";
+import { createSharedWorkerStorage } from "./shared-worker-storage";
+import type { PortAdapter } from "./shared-worker-storage";
 import {
   createDeadPort,
   createErrorPort,
@@ -7,6 +8,8 @@ import {
   createRecordingPort,
   createResultPort,
   fakeSharedWorker,
+  messageErrorEvent,
+  messageEvent,
   recorder,
   rejectionFrom,
   withConsoleSpies,
@@ -14,7 +17,8 @@ import {
   withSharedWorker,
 } from "./test-utils";
 import { respond } from "./worker/connection";
-import { PROTOCOL_VERSION, type StorageRequest, type StorageResponse } from "./worker/protocol";
+import { PROTOCOL_VERSION } from "./worker/protocol";
+import type { StorageRequest, StorageResponse } from "./worker/protocol";
 import { CacheStore } from "./worker/store";
 
 /**
@@ -25,6 +29,30 @@ import { CacheStore } from "./worker/store";
  * The rest of the client's tests are in the sibling
  * `shared-worker-storage.*.test.ts` files, one concern to a file.
  */
+
+/**
+ * A port answering as a worker on some other build would: the reply is the
+ * real one this package produces, restamped with `version` — or with the
+ * field removed entirely, which is what a worker predating it sends.
+ */
+function createPortSpeaking(version: number | undefined): PortAdapter {
+  const store = new CacheStore();
+  const port: PortAdapter = {
+    onmessage: null,
+    postMessage(request: StorageRequest) {
+      const response: Record<string, unknown> = { ...respond(store, request) };
+      if (version === undefined) {
+        delete response.version;
+      } else {
+        response.version = version;
+      }
+      queueMicrotask(() => {
+        port.onmessage?.(messageEvent(response));
+      });
+    },
+  };
+  return port;
+}
 
 describe("createSharedWorkerStorage", () => {
   it("returns null for a missing key", async () => {
@@ -88,7 +116,7 @@ describe("createSharedWorkerStorage", () => {
       const port: PortAdapter = {
         onmessage: null,
         postMessage(request: StorageRequest) {
-          port.onmessage?.({ data: respond(store, request) } as MessageEvent<unknown>);
+          port.onmessage?.(messageEvent(respond(store, request)));
         },
       };
       using storage = createSharedWorkerStorage({ port, timeoutMs: 60_000 });
@@ -150,7 +178,7 @@ describe("createSharedWorkerStorage", () => {
   });
 
   it("closes the port and detaches handlers when disposed", () => {
-    const close = vi.fn();
+    const close = vi.fn<() => void>();
     const port: PortAdapter = { onmessage: null, postMessage() {}, close };
     const storage = createSharedWorkerStorage({ port });
     storage.dispose();
@@ -160,7 +188,7 @@ describe("createSharedWorkerStorage", () => {
   });
 
   it("rejects writes issued after disposal without waiting out the timeout", async () => {
-    const postMessage = vi.fn();
+    const postMessage = vi.fn<(message: StorageRequest) => void>();
     // The timeout is far longer than the test could tolerate, so a rejection
     // arriving at all proves it came from the fast path rather than the timer.
     const port: PortAdapter = { onmessage: null, postMessage };
@@ -172,16 +200,18 @@ describe("createSharedWorkerStorage", () => {
   });
 
   it("is idempotent: disposing twice does not close the port twice or throw", () => {
-    const close = vi.fn();
+    const close = vi.fn<() => void>();
     const port: PortAdapter = { onmessage: null, postMessage() {}, close };
     const storage = createSharedWorkerStorage({ port });
     storage.dispose();
-    expect(() => storage.dispose()).not.toThrow();
+    expect(() => {
+      storage.dispose();
+    }).not.toThrow();
     expect(close).toHaveBeenCalledTimes(1);
   });
 
   it("disposes through Symbol.dispose exactly as dispose does", async () => {
-    const close = vi.fn();
+    const close = vi.fn<() => void>();
     const port: PortAdapter = { onmessage: null, postMessage() {}, close };
     const storage = createSharedWorkerStorage({ port, timeoutMs: 60_000 });
     const inflight = storage.setItem("k", "v");
@@ -195,7 +225,7 @@ describe("createSharedWorkerStorage", () => {
   });
 
   it("releases the storage when a `using` declaration goes out of scope", async () => {
-    const close = vi.fn();
+    const close = vi.fn<() => void>();
     const port: PortAdapter = { onmessage: null, postMessage() {}, close };
     let inflight: Promise<unknown>;
     {
@@ -212,7 +242,7 @@ describe("createSharedWorkerStorage", () => {
       const deadPort = createDeadPort();
       const storage = createSharedWorkerStorage({ port: deadPort, timeoutMs: 20 });
       const inflight = storage.setItem("k", "v");
-      deadPort.onmessageerror?.({} as MessageEvent);
+      deadPort.onmessageerror?.(messageErrorEvent());
       // The event names no request, so this one is not settled by it: it fails
       // on its own deadline, and says so rather than blaming the bad message.
       await expect(inflight).rejects.toThrow(/timed out/);
@@ -225,7 +255,7 @@ describe("createSharedWorkerStorage", () => {
     await withConsoleSpies(async ({ error }) => {
       const port = createFakePort();
       const storage = createSharedWorkerStorage({ port });
-      port.onmessageerror?.({} as MessageEvent);
+      port.onmessageerror?.(messageErrorEvent());
       // The worker is still there, so the next round trip must go through.
       await storage.setItem("k", "v");
       await expect(storage.getItem("k")).resolves.toBe("v");
@@ -248,7 +278,7 @@ describe("createSharedWorkerStorage", () => {
     const port = createDeadPort();
     const storage = createSharedWorkerStorage({ port, timeoutMs: 20 });
     const inflight = storage.setItem("k", "v");
-    port.onmessage?.({ data } as MessageEvent<unknown>);
+    port.onmessage?.(messageEvent(data));
     // Only the timeout settles it, proving the stray message never matched the
     // pending id - it would otherwise have settled the request early.
     await expect(inflight).rejects.toThrow(/timed out/);
@@ -261,7 +291,7 @@ describe("createSharedWorkerStorage", () => {
     const port = createFakePort(store);
     const storage = createSharedWorkerStorage({ port });
     const inflight = storage.getItem("k");
-    port.onmessage?.({ data: { kind: "broadcast", id: 1 } } as MessageEvent<unknown>);
+    port.onmessage?.(messageEvent({ kind: "broadcast", id: 1 }));
     await expect(inflight).resolves.toBe("v");
     storage.dispose();
   });
@@ -350,27 +380,6 @@ describe("createSharedWorkerStorage", () => {
 });
 
 describe("the protocol version", () => {
-  /**
-   * A port answering as a worker on some other build would: the reply is the
-   * real one this package produces, restamped with `version` — or with the
-   * field removed entirely, which is what a worker predating it sends.
-   */
-  function createPortSpeaking(version: number | undefined): PortAdapter {
-    const store = new CacheStore();
-    const port: PortAdapter = {
-      onmessage: null,
-      postMessage(request: StorageRequest) {
-        const response: Record<string, unknown> = { ...respond(store, request) };
-        if (version === undefined) delete response.version;
-        else response.version = version;
-        queueMicrotask(() => {
-          port.onmessage?.({ data: response } as MessageEvent<unknown>);
-        });
-      },
-    };
-    return port;
-  }
-
   it("travels out on every request", async () => {
     const { port, sent } = createRecordingPort();
     const storage = createSharedWorkerStorage({ port });
@@ -380,7 +389,9 @@ describe("the protocol version", () => {
     await storage.removeItem("k");
     storage.dispose();
     expect(sent).toHaveLength(4);
-    for (const request of sent) expect(request.version).toBe(PROTOCOL_VERSION);
+    for (const request of sent) {
+      expect(request.version).toBe(PROTOCOL_VERSION);
+    }
   });
 
   it("comes back on every response the worker sends", async () => {
@@ -390,7 +401,7 @@ describe("the protocol version", () => {
       postMessage(request: StorageRequest) {
         const response = respond(new CacheStore(), request);
         sent.push(response);
-        queueMicrotask(() => port.onmessage?.({ data: response } as MessageEvent<unknown>));
+        queueMicrotask(() => port.onmessage?.(messageEvent(response)));
       },
     };
     const storage = createSharedWorkerStorage({ port });
