@@ -148,12 +148,12 @@ describe("CacheStore", () => {
       // `op` is a closed union, so the branch this exercises is reachable only
       // from a caller outside the type system - which is exactly who `handle`
       // is defensive against, and so exactly what the test has to impersonate.
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion
       const request = {
         kind: "request",
         id: 1,
         op: "clear",
         key: "k",
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion
       } as unknown as StorageRequest;
       expect(() => store.handle(request)).toThrow(/clear/);
     });
