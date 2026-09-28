@@ -36,6 +36,17 @@ const BUNDLE_PATH = "../dist/index.js";
 const WORKER_PATH = "../dist/cache.worker.js";
 
 /**
+ * The built asset under a URL of the caller's choosing. The bundle's own
+ * reference already resolves to this file, so the query string is what makes
+ * these a different worker from the default one: a connection that quietly
+ * ignored `workerUrl` would land on the default worker and be caught by the
+ * separation the last test asserts, rather than pass unnoticed.
+ */
+function hostedAt(copy: string) {
+  return new URL(`${WORKER_PATH}?${copy}`, import.meta.url).href;
+}
+
+/**
  * The built bundle's exports. Imported by URL at runtime, not by specifier,
  * because `dist/` is a build product: a static import would make type checking
  * and the Node suite depend on a build having happened first. The types still
@@ -261,17 +272,6 @@ describe("a worker whose script cannot be loaded", () => {
 });
 
 describe("a worker hosted at an explicit workerUrl", () => {
-  /**
-   * The built asset under a URL of the caller's choosing. The bundle's own
-   * reference already resolves to this file, so the query string is what makes
-   * these a different worker from the default one: a connection that quietly
-   * ignored `workerUrl` would land on the default worker and be caught by the
-   * separation the last test asserts, rather than pass unnoticed.
-   */
-  function hostedAt(copy: string) {
-    return new URL(`${WORKER_PATH}?${copy}`, import.meta.url).href;
-  }
-
   it("round-trips through a copy served from another URL", async () => {
     const key = uniqueKey("hosted");
     const { reported, onError } = recorder();

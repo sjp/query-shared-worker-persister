@@ -22,6 +22,27 @@ function persistedClient(): PersistedClient {
   return { timestamp: 0, buster: "", clientState: { mutations: [], queries: [] } };
 }
 
+/** Persist twice under one key, and report what the store held in between. */
+function persistTwice(options: CreateSharedWorkerPersisterOptions, waitMs: number) {
+  const { FakeSharedWorker, store } = fakeSharedWorker();
+  return withSharedWorker(FakeSharedWorker, async () => {
+    const persister = createSharedWorkerPersister({
+      ...options,
+      key: "K",
+      serialize: (client) => client.buster,
+    });
+    await persister.persistClient({ ...persistedClient(), buster: "first" });
+    const second = persister.persistClient({ ...persistedClient(), buster: "second" });
+    await vi.advanceTimersByTimeAsync(waitMs);
+    const afterWaiting = store.getItem("K");
+    // Let the throttled write land however long it was held back, so no
+    // pending timer outlives the test.
+    await vi.advanceTimersByTimeAsync(60_000);
+    await second;
+    return { afterWaiting, afterSettling: store.getItem("K") };
+  });
+}
+
 describe("createSharedWorkerPersister", () => {
   it("round-trips a client through the SharedWorker", async () => {
     const { FakeSharedWorker } = fakeSharedWorker();
@@ -365,27 +386,6 @@ describe("throttling repeated writes", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
-
-  /** Persist twice under one key, and report what the store held in between. */
-  function persistTwice(options: CreateSharedWorkerPersisterOptions, waitMs: number) {
-    const { FakeSharedWorker, store } = fakeSharedWorker();
-    return withSharedWorker(FakeSharedWorker, async () => {
-      const persister = createSharedWorkerPersister({
-        ...options,
-        key: "K",
-        serialize: (client) => client.buster,
-      });
-      await persister.persistClient({ ...persistedClient(), buster: "first" });
-      const second = persister.persistClient({ ...persistedClient(), buster: "second" });
-      await vi.advanceTimersByTimeAsync(waitMs);
-      const afterWaiting = store.getItem("K");
-      // Let the throttled write land however long it was held back, so no
-      // pending timer outlives the test.
-      await vi.advanceTimersByTimeAsync(60_000);
-      await second;
-      return { afterWaiting, afterSettling: store.getItem("K") };
-    });
-  }
 
   it("holds a second write back for a second by default", async () => {
     const { afterWaiting, afterSettling } = await persistTwice({}, 999);

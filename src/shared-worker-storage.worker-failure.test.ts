@@ -75,6 +75,28 @@ function createClosingPort() {
   return { port, postMessage, close, closeFromWorker: () => port.onclose?.(new Event("close")) };
 }
 
+/** Build a storage over a fresh closing port and hand back both. */
+async function withClosingPort(
+  fn: (
+    connection: ReturnType<typeof createClosingPort>,
+    storage: SharedWorkerStorage,
+    onError: (error: SharedWorkerStorageError) => void,
+  ) => Promise<void>,
+) {
+  const { reported, onError } = recorder();
+  const connection = createClosingPort();
+  // Far longer than the test could tolerate, so any rejection that arrives
+  // proves it came from the close rather than the timer.
+  const storage = createSharedWorkerStorage({
+    port: connection.port,
+    timeoutMs: 60_000,
+    onError,
+  });
+  await fn(connection, storage, onError);
+  storage.dispose();
+  return reported;
+}
+
 describe("isSharedWorkerSupported", () => {
   it("is false when SharedWorker is absent", async () => {
     await withSharedWorker(undefined, () => {
@@ -349,28 +371,6 @@ describe("when the port refuses the message", () => {
 });
 
 describe("when the worker connection closes", () => {
-  /** Build a storage over a fresh closing port and hand back both. */
-  async function withClosingPort(
-    fn: (
-      connection: ReturnType<typeof createClosingPort>,
-      storage: SharedWorkerStorage,
-      onError: (error: SharedWorkerStorageError) => void,
-    ) => Promise<void>,
-  ) {
-    const { reported, onError } = recorder();
-    const connection = createClosingPort();
-    // Far longer than the test could tolerate, so any rejection that arrives
-    // proves it came from the close rather than the timer.
-    const storage = createSharedWorkerStorage({
-      port: connection.port,
-      timeoutMs: 60_000,
-      onError,
-    });
-    await fn(connection, storage, onError);
-    storage.dispose();
-    return reported;
-  }
-
   it("rejects the in-flight writes with the transport error", async () => {
     await withClosingPort(async ({ closeFromWorker }, storage) => {
       const inflight = storage.setItem("k", "v");
