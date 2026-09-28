@@ -68,7 +68,7 @@
     "@tanstack/query-core": "^5.103.0",
     "@tanstack/query-persist-client-core": "^5.103.0",
     "@vitest/browser-playwright": "^5.0.1",
-    "oxfmt": "^0.68.0",
+    "oxfmt": "^0.70.0",
     "oxlint": "^1.83.0",
     "oxlint-tsgolint": "^7.0.2001",
     "playwright": "^1.63.0",
