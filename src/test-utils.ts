@@ -21,7 +21,7 @@ export { messageErrorEvent, messageEvent } from "./message-event";
  * error envelopes included; only the transport is fake. This lets us test the
  * client-side request/response correlation without a real worker.
  */
-export function createFakePort(store = new CacheStore()): PortAdapter {
+export function createFakePort(store: CacheStore = new CacheStore()): PortAdapter {
   const port: PortAdapter = {
     onmessage: null,
     postMessage(request: StorageRequest) {
@@ -127,7 +127,7 @@ export interface RecordingPort {
  * A {@link createFakePort} that also keeps every request posted through it, for
  * the tests that assert on what the client asked as well as on what it got back.
  */
-export function createRecordingPort(store = new CacheStore()): RecordingPort {
+export function createRecordingPort(store: CacheStore = new CacheStore()): RecordingPort {
   const sent: StorageRequest[] = [];
   const port = createForwardingPort(createFakePort(store), (request) => void sent.push(request));
   return { port, sent, store };

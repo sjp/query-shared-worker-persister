@@ -11,6 +11,9 @@
     "isolatedModules": true,
     "moduleDetection": "force",
     "noEmit": true,
+    /* Declarations are emitted by tsdown via Oxc, which TypeScript 7 requires */
+    "declaration": true,
+    "isolatedDeclarations": true,
     /* Linting */
     "strict": true,
     "noUnusedLocals": true,
