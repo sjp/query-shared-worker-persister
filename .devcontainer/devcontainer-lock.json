@@ -9,17 +9,6 @@
       "version": "2.1.0",
       "resolved": "ghcr.io/devcontainers/features/node@sha256:586c9a6f7dd40bd3ba2cd41e7f2f88dcc31fbe5d1442afcbf07ffbc66b686857",
       "integrity": "sha256:586c9a6f7dd40bd3ba2cd41e7f2f88dcc31fbe5d1442afcbf07ffbc66b686857"
-    },
-    "ghcr.io/helpers4/devcontainer/essential-dev:1": {
-      "version": "1.0.7",
-      "resolved": "ghcr.io/helpers4/devcontainer/essential-dev@sha256:6f6a09dcc0e6c3b3158c217219960253365a0d0b432c8b308572e4c950b61340",
-      "integrity": "sha256:6f6a09dcc0e6c3b3158c217219960253365a0d0b432c8b308572e4c950b61340"
-    },
-    "ghcr.io/helpers4/devcontainer/typescript-dev:1": {
-      "version": "1.0.7",
-      "resolved": "ghcr.io/helpers4/devcontainer/typescript-dev@sha256:76abf803b00fcfaa628588e0f6e0c532c590fabdd88748a65557a83d66de3f6d",
-      "integrity": "sha256:76abf803b00fcfaa628588e0f6e0c532c590fabdd88748a65557a83d66de3f6d",
-      "dependsOn": ["ghcr.io/helpers4/devcontainer/essential-dev:1"]
     }
   }
 }
