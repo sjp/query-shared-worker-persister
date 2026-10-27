@@ -313,7 +313,7 @@ export async function rejectionFrom(
   if (!(error instanceof errorClass)) {
     // Unreachable: the assertion above has already failed the test. Written as a
     // guard rather than a cast so the narrowing is the run-time check itself.
-    throw new Error(`expected a ${errorClass.name}, received ${describeValue(error)}`);
+    throw new TypeError(`expected a ${errorClass.name}, received ${describeValue(error)}`);
   }
   return error;
 }
@@ -325,7 +325,7 @@ export async function rejectionFrom(
  */
 export function storageErrorFrom(value: unknown): SharedWorkerStorageError {
   if (!(value instanceof SharedWorkerStorageError)) {
-    throw new Error(`expected a SharedWorkerStorageError, received ${describeValue(value)}`);
+    throw new TypeError(`expected a SharedWorkerStorageError, received ${describeValue(value)}`);
   }
   return value;
 }
@@ -339,7 +339,7 @@ export function storageCauseOf(error: Error | undefined): SharedWorkerStorageErr
 export function causeOf(error: Error | undefined): Error {
   const cause = error?.cause;
   if (!(cause instanceof Error)) {
-    throw new Error(`expected an Error cause, received ${describeValue(cause)}`);
+    throw new TypeError(`expected an Error cause, received ${describeValue(cause)}`);
   }
   return cause;
 }
