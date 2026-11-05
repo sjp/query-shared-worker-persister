@@ -17,7 +17,7 @@ A common use case is for access tokens. There is rarely a need for fetching a se
 
 ### Demo
 
-A simple demo app has been published that demonstrates desired caching behaviour here: <https://sjp.co.nz/projects/query-shared-worker-persister/demo>
+A simple demo app has been published that demonstrates desired caching behaviour here: <https://sjp.github.io/query-shared-worker-demo>
 
 The source for the react application is available on [GitHub](https://github.com/sjp/query-shared-worker-demo)
 
